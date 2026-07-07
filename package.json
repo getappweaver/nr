@@ -1,0 +1,16 @@
+{
+  "name": "appweaver-nr-plugin",
+  "version": "1.0.0",
+  "appweaver": {
+    "title": "Nostr Radar",
+    "icon": "./commands/list/renderers/nostr-radar.svg",
+    "website": "https://getappweaver.com/apps/nostr-radar",
+    "coreApiVersion": "^9.49.0",
+    "description": "An intentional Nostr reader for AppWeaver. Fetch posts from your follows, classify them with AI, and review the important conversations by topic, mood, timeline, or archive."
+  },
+  "description": "An intentional Nostr reader for AppWeaver. Fetch posts from your follows, classify them with AI, and review the important conversations by topic, mood, timeline, or archive.",
+  "type": "module",
+  "scripts": {
+    "contrib:setup": "chmod +x ../../scripts/commit-msg ../../scripts/post-commit ../../scripts/ngit-helper.sh && git config core.hooksPath ../../scripts"
+  }
+}
