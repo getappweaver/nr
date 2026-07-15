@@ -174,6 +174,8 @@ export function renderNrListParseSingleWeb({
                   profiles,
                   showReplyContext: true,
                   interactions,
+                  localPreference: null,
+                  rankingScore: null,
                   mode: 'timeline',
                 }),
               ],

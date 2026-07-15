@@ -11,9 +11,15 @@ import {
   buildClassificationPrompt,
   classifyEvent,
   parseAiClassification,
+  type NrAudienceReactionCount,
 } from './classifier';
-import type { EventClassification, NostrEvent } from './commands/shared/types';
+import type {
+  EventClassification,
+  NostrEvent,
+  NrAudienceReaction,
+} from './commands/shared/types';
 import { buildNrPluginContextText } from './context';
+import { listNrAudienceReactions } from './db';
 import { fetchReferencedEvents } from './references';
 import { getNrSettings } from './settings';
 
@@ -23,9 +29,43 @@ type ClassifyEventWithNrAiProps = {
   instructions: string;
   threadContextEvents: NostrEvent[];
   referencedEvents: NostrEvent[] | null;
+  audienceReactions: NrAudienceReaction[];
   storedCtx: PluginContext;
   runAgent: RunAgentFn | null;
 };
+
+function reactionCounts({
+  cached,
+  current,
+}: {
+  cached: NrAudienceReaction[];
+  current: NrAudienceReaction[];
+}): NrAudienceReactionCount[] {
+  const latestByPubkey = new Map<string, NrAudienceReaction>();
+
+  for (const reaction of [...cached, ...current]) {
+    const existing = latestByPubkey.get(reaction.pubkey);
+
+    if (!existing || reaction.createdAt > existing.createdAt) {
+      latestByPubkey.set(reaction.pubkey, reaction);
+    }
+  }
+
+  const counts = new Map<string, number>();
+
+  const latestReactions = [...latestByPubkey.values()]
+    .sort((left, right) => right.createdAt - left.createdAt)
+    .slice(0, 50);
+
+  for (const reaction of latestReactions) {
+    const value = (reaction.content.trim() || '+').slice(0, 80);
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+
+  return [...counts.entries()]
+    .map(([value, count]) => ({ value, count }))
+    .sort((left, right) => right.count - left.count);
+}
 
 export async function classifyEventWithNrAi({
   db,
@@ -33,6 +73,7 @@ export async function classifyEventWithNrAi({
   instructions,
   threadContextEvents,
   referencedEvents,
+  audienceReactions,
   storedCtx,
   runAgent,
 }: ClassifyEventWithNrAiProps): Promise<EventClassification> {
@@ -57,6 +98,10 @@ export async function classifyEventWithNrAi({
     nrContext: buildNrPluginContextText(db),
     referencedEvents: promptReferencedEvents,
     threadContextEvents,
+    audienceReactions: reactionCounts({
+      cached: listNrAudienceReactions(db, event.id),
+      current: audienceReactions,
+    }),
   });
 
   const backendName = settings.backend ?? storedCtx.defaults.backend;

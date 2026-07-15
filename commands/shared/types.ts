@@ -44,7 +44,7 @@ export type NrTagGroup = {
   events: NrEvent[];
 };
 
-export type NrListMode = 'timeline' | 'archive';
+export type NrListMode = 'timeline' | 'for-you' | 'profile' | 'archive';
 
 export type NrFetchScope = 'follows';
 
@@ -64,6 +64,21 @@ export type NrFetchWindow = {
   updatedAt: number;
 };
 
+export type NrFetchRelayCursor = {
+  since: number;
+  until: number;
+  scope: NrFetchScope;
+  relay: string;
+  authorsHash: string;
+  authors: string[];
+  nextUntil: number;
+  completed: boolean;
+  fetchedEventCount: number;
+  lastError: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+
 export type NrInteractionType = 'liked' | 'replied' | 'reposted' | 'quoted';
 
 export type NrInteraction = {
@@ -74,6 +89,32 @@ export type NrInteraction = {
   interactionCreatedAt: number;
   discoveredAt: number;
   source: 'web';
+};
+
+export type NrAudienceReaction = {
+  pubkey: string;
+  content: string;
+  createdAt: number;
+};
+
+export type NrInterestSignalType =
+  | 'like'
+  | 'reply'
+  | 'repost'
+  | 'quote'
+  | 'archive'
+  | 'local_like'
+  | 'local_dislike';
+
+export type NrInterestSignal = {
+  targetEventId: string;
+  type: NrInterestSignalType;
+  weight: number;
+  topics: string[];
+  moods: string[];
+  source: 'interaction' | 'archive' | 'private' | 'seed';
+  createdAt: number;
+  updatedAt: number;
 };
 
 export type NrTaxonomyTermType = 'topic' | 'mood';
@@ -90,13 +131,24 @@ export type NrTaxonomyTerm = {
 
 export type NrListData = {
   mode: NrListMode;
+  selectedCategories: import('../list/categories').NrFeedCategory[];
+  profileEvents: NrProfileEvent[];
+  forYouEvents: NrEvent[];
+  forYouScores: Record<string, number>;
+  activityEvents: NrEvent[];
   topicGroups: NrTagGroup[];
   moodGroups: NrTagGroup[];
   unreadTotal: number;
   fetchWindows: NrFetchWindow[];
   interactions: NrInteraction[];
+  interestSignals: NrInterestSignal[];
   taxonomyTerms: NrTaxonomyTerm[];
   settings: NrSettings;
+};
+
+export type NrProfileEvent = {
+  event: NostrEvent;
+  referencedEvents: NostrEvent[];
 };
 
 export type ParsedNrEventResult = {

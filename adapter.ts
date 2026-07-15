@@ -19,6 +19,7 @@ import { adaptFetchLatestCommand } from './commands/fetch-latest/adapter';
 import { adaptHelpCommand } from './commands/help/adapter';
 import { getNrCommandDefinition } from './commands/help/module';
 import { adaptInteractionRecordCommand } from './commands/interaction-record/adapter';
+import { adaptInterestRecordCommand } from './commands/interest-record/adapter';
 import { adaptListCommand } from './commands/list/adapter';
 import { adaptListParseSingleCommand } from './commands/list-parse-single/adapter';
 import { adaptMarkCommand } from './commands/mark/adapter';
@@ -42,6 +43,7 @@ type NrSubcommand =
   | 'fetch-latest'
   | 'latest'
   | 'interaction-record'
+  | 'interest-record'
   | 'debug'
   | 'list-parse-single'
   | 'list';
@@ -70,6 +72,7 @@ const subcommandAdapters: Record<NrSubcommand, NrCommandAdapter> = {
   'fetch-latest': adaptFetchLatestCommand,
   latest: adaptFetchLatestCommand,
   'interaction-record': adaptInteractionRecordCommand,
+  'interest-record': adaptInterestRecordCommand,
   debug: adaptListParseSingleCommand,
   'list-parse-single': adaptListParseSingleCommand,
   list: adaptListCommand,
@@ -108,6 +111,7 @@ function isNrSubcommand(value: string): value is NrSubcommand {
     value === 'fetch-latest' ||
     value === 'latest' ||
     value === 'interaction-record' ||
+    value === 'interest-record' ||
     value === 'debug' ||
     value === 'list-parse-single' ||
     value === 'list'

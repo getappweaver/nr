@@ -31,6 +31,17 @@ export function formatNrListData(listData: NrListData): string {
     return `No ${noun} cached Nostr events.`;
   }
 
+  if (listData.mode === 'for-you') {
+    return [
+      `For You events: ${listData.forYouEvents.length}`,
+      '',
+      ...listData.forYouEvents.map(
+        (event) =>
+          `  ${event.id} ${event.summary || event.content.slice(0, 80)}`,
+      ),
+    ].join('\n');
+  }
+
   return [
     `${noun[0]?.toUpperCase() ?? ''}${noun.slice(1)} events: ${listData.unreadTotal}`,
     '',

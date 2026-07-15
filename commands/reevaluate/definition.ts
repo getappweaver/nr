@@ -16,6 +16,14 @@ export const reevaluateDefinition = (
       variadic: false,
     },
   ],
-  options: [],
+  options: [
+    {
+      name: 'event_json',
+      flag: '--event-json',
+      summary: 'Internal raw Nostr event JSON to cache before reevaluating.',
+      kind: 'string',
+      required: false,
+    },
+  ],
   examples: [`${prefix}${alias} reevaluate <event_id>`],
 });

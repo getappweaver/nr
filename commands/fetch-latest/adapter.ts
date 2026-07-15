@@ -1,17 +1,22 @@
+import { createHash } from 'crypto';
+
 import { parseRelayUrls } from '@src/env';
 import { debug } from '@src/logger';
 import { filterBlockedReadRelays } from '@src/nostr/relay-notices';
 
 import { classifyEventWithNrAi } from '../../classifier-ai';
 import {
-  hasNrEvent,
+  getNr,
   hasNrSkippedEvent,
+  listNrFetchRelayCursors,
   parseAndStoreEvent,
   recordNrFetchWindow,
   recordNrSkippedEvent,
+  saveNrFetchRelayCursor,
 } from '../../db';
 import {
   extractEventReferences,
+  fetchTagReferencedEvents,
   fetchReferencedEvents,
 } from '../../references';
 import { getNrSettings } from '../../settings';
@@ -22,9 +27,46 @@ import {
 import type { NrCommandAdapterParams } from '../../types/adapter-params';
 
 import { NR_FETCH_STATUS_TARGET_ID } from '../fetch-status';
+import type {
+  NostrEvent,
+  NrAudienceReaction,
+  NrEvent,
+  NrFetchRelayCursor,
+} from '../shared/types';
 import { NostrEventSchema } from '../shared/types';
 
 const BACKGROUND_COMMAND_STATUS_MARKER = '__WEB_COMMAND_STATUS__';
+
+function reactionTargetId(event: NostrEvent): string | null {
+  const targetTag = event.tags
+    .filter((tag) => tag[0] === 'e' && tag[1]?.trim())
+    .at(-1);
+
+  return targetTag?.[1]?.trim() || null;
+}
+
+function needsNestedReferences(event: NrEvent): boolean {
+  try {
+    const referenced = JSON.parse(event.referenced_events_json) as NostrEvent[];
+    const threadContext = JSON.parse(event.thread_context_json) as NostrEvent[];
+
+    const referencedById = new Map(
+      referenced.map((reference) => [reference.id, reference]),
+    );
+
+    const contentReferences = extractEventReferences(event.content)
+      .map((reference) => referencedById.get(reference.id))
+      .filter((reference): reference is NostrEvent => reference !== undefined);
+
+    return [...threadContext, ...contentReferences].some((contextEvent) =>
+      extractEventReferences(contextEvent.content).some(
+        (reference) => !referencedById.has(reference.id),
+      ),
+    );
+  } catch {
+    return false;
+  }
+}
 
 type SendFetchStatusProps = {
   params: NrCommandAdapterParams;
@@ -32,6 +74,44 @@ type SendFetchStatusProps = {
   output: string | null;
   progress: number | null;
 };
+
+type WithTimeoutProps<T> = {
+  operation: Promise<T>;
+  label: string;
+  timeoutMs: number;
+};
+
+type RelayAuthorGroup = {
+  relay: string;
+  authors: string[];
+};
+
+type FetchRelayGroupPagesProps = {
+  params: NrCommandAdapterParams;
+  group: RelayAuthorGroup;
+  since: number;
+  until: number;
+  limit: number;
+  cursor: NrFetchRelayCursor | null;
+  authorsHash: string;
+};
+
+type FetchRelayGroupPagesResult = {
+  relay: string;
+  events: NostrEvent[];
+  completed: boolean;
+  failed: boolean;
+  error: string | null;
+  pageCount: number;
+};
+
+type MapWithConcurrencyProps<T, R> = {
+  items: T[];
+  concurrency: number;
+  map: (item: T) => Promise<R>;
+};
+
+const RELAY_FETCH_CONCURRENCY = 3;
 
 async function sendFetchStatus({
   params,
@@ -52,6 +132,206 @@ async function sendFetchStatus({
       progress,
     })}`,
   );
+}
+
+async function withTimeout<T>({
+  operation,
+  label,
+  timeoutMs,
+}: WithTimeoutProps<T>): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<T>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== null) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+
+function normalizedAuthors(authors: string[]): string[] {
+  return [
+    ...new Set(
+      authors.map((author) => author.trim().toLowerCase()).filter(Boolean),
+    ),
+  ].sort();
+}
+
+function relayGroupAuthorsHash(authors: string[]): string {
+  return createHash('sha256')
+    .update(normalizedAuthors(authors).join(','))
+    .digest('hex');
+}
+
+function relayCursorKey(relay: string, authorsHash: string): string {
+  return `${relay}\u0000${authorsHash}`;
+}
+
+async function mapWithConcurrency<T, R>({
+  items,
+  concurrency,
+  map,
+}: MapWithConcurrencyProps<T, R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  async function worker(): Promise<void> {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await map(items[index]!);
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, () => worker()),
+  );
+
+  return results;
+}
+
+async function fetchRelayGroupPages({
+  params,
+  group,
+  since,
+  until,
+  limit,
+  cursor,
+  authorsHash,
+}: FetchRelayGroupPagesProps): Promise<FetchRelayGroupPagesResult> {
+  if (cursor?.completed) {
+    return {
+      relay: group.relay,
+      events: [],
+      completed: true,
+      failed: false,
+      error: null,
+      pageCount: 0,
+    };
+  }
+
+  const authors = normalizedAuthors(group.authors);
+  let nextUntil = cursor?.nextUntil ?? until;
+  let fetchedEventCount = cursor?.fetchedEventCount ?? 0;
+  const events: NostrEvent[] = [];
+  let pageCount = 0;
+
+  while (nextUntil >= since) {
+    const startedAt = Date.now();
+    pageCount += 1;
+
+    debug(
+      `nr fetch-latest: querying ${group.relay} page ${pageCount} for ${authors.length} author(s), ${formatTimestamp(since)}→${formatTimestamp(nextUntil)}`,
+    );
+
+    try {
+      const page = await withTimeout({
+        operation: params.storedCtx.pool.querySync(
+          [group.relay],
+          {
+            kinds: [1, 6, 7, 16, 1111],
+            authors,
+            since,
+            until: nextUntil,
+            limit,
+          },
+          { maxWait: 5_000 },
+        ),
+        label: `nr fetch-latest relay query ${group.relay}`,
+        timeoutMs: 15_000,
+      });
+
+      const pageEvents = page.sort((a, b) => b.created_at - a.created_at);
+      const oldestCreatedAt = pageEvents.at(-1)?.created_at ?? null;
+
+      const completed =
+        pageEvents.length < limit ||
+        oldestCreatedAt === null ||
+        oldestCreatedAt <= since;
+
+      const nextCursorUntil =
+        oldestCreatedAt === null || oldestCreatedAt <= since
+          ? since
+          : oldestCreatedAt - 1;
+
+      events.push(...pageEvents);
+      fetchedEventCount += pageEvents.length;
+      nextUntil = completed ? since : nextCursorUntil;
+
+      saveNrFetchRelayCursor({
+        db: params.db,
+        since,
+        until,
+        scope: 'follows',
+        relay: group.relay,
+        authorsHash,
+        authors,
+        nextUntil,
+        completed,
+        fetchedEventCount,
+        lastError: null,
+      });
+
+      debug(
+        `nr fetch-latest: ${group.relay} page ${pageCount} returned ${pageEvents.length} event(s) in ${Date.now() - startedAt}ms; ${completed ? 'complete' : `continuing from ${formatTimestamp(nextUntil)}`}`,
+      );
+
+      if (completed) {
+        return {
+          relay: group.relay,
+          events,
+          completed: true,
+          failed: false,
+          error: null,
+          pageCount,
+        };
+      }
+    } catch (error) {
+      const message = errorMessage(error);
+
+      saveNrFetchRelayCursor({
+        db: params.db,
+        since,
+        until,
+        scope: 'follows',
+        relay: group.relay,
+        authorsHash,
+        authors,
+        nextUntil,
+        completed: false,
+        fetchedEventCount,
+        lastError: message,
+      });
+
+      debug(`nr fetch-latest relay query failed: ${group.relay}: ${message}`);
+
+      return {
+        relay: group.relay,
+        events,
+        completed: false,
+        failed: true,
+        error: message,
+        pageCount,
+      };
+    }
+  }
+
+  return {
+    relay: group.relay,
+    events,
+    completed: true,
+    failed: false,
+    error: null,
+    pageCount,
+  };
 }
 
 function integerOption(value: unknown, fallback: number): number {
@@ -127,6 +407,10 @@ export async function adaptFetchLatestCommand(
     return `Invalid fetch window: --since (${since}) must be older than --until (${until}).`;
   }
 
+  debug(
+    `nr fetch-latest: starting fetch for ${authors.length}/${follows.length} follows across ${relayAuthorGroups.length} relay group(s); window=${formatTimestamp(since)}→${formatTimestamp(until)} limit=${limit}`,
+  );
+
   await sendFetchStatus({
     params,
     message: 'Fetching Nostr posts…',
@@ -134,66 +418,91 @@ export async function adaptFetchLatestCommand(
     progress: null,
   });
 
-  const settled = await Promise.allSettled(
-    relayAuthorGroups.map(async (group) => {
-      debug(
-        `nr fetch-latest: querying ${group.relay} for ${group.authors.length} author(s)`,
-      );
-
-      const events = await params.storedCtx.pool.querySync(
-        [group.relay],
-        {
-          kinds: [1],
-          authors: group.authors,
-          since,
-          until,
-          limit,
-        },
-        { maxWait: 5_000 },
-      );
-
-      debug(
-        `nr fetch-latest: ${group.relay} returned ${events.length} event(s)`,
-      );
-
-      return { relay: group.relay, events };
-    }),
+  const cursorByGroup = new Map(
+    listNrFetchRelayCursors({
+      db: params.db,
+      since,
+      until,
+      scope: 'follows',
+    }).map((cursor) => [
+      relayCursorKey(cursor.relay, cursor.authorsHash),
+      cursor,
+    ]),
   );
 
-  const failedRelayCount = settled.filter(
-    (entry) => entry.status === 'rejected',
+  const groups = relayAuthorGroups as RelayAuthorGroup[];
+
+  const groupResults = await mapWithConcurrency({
+    items: groups,
+    concurrency: RELAY_FETCH_CONCURRENCY,
+    map: async (group) => {
+      const authorsHash = relayGroupAuthorsHash(group.authors);
+
+      return fetchRelayGroupPages({
+        params,
+        group,
+        since,
+        until,
+        limit,
+        cursor:
+          cursorByGroup.get(relayCursorKey(group.relay, authorsHash)) ?? null,
+        authorsHash,
+      });
+    },
+  });
+
+  const failedRelayCount = groupResults.filter(
+    (result) => result.failed,
   ).length;
 
-  for (const entry of settled) {
-    if (entry.status === 'rejected') {
-      debug(`nr fetch-latest relay query failed: ${String(entry.reason)}`);
-    }
-  }
+  const incompleteRelayCount = groupResults.filter(
+    (result) => !result.completed,
+  ).length;
+
+  const pageCount = groupResults.reduce(
+    (total, result) => total + result.pageCount,
+    0,
+  );
 
   const eventRelayHints = new Map<string, string[]>();
 
-  const rawEvents = settled.flatMap((entry) => {
-    if (entry.status !== 'fulfilled') {
-      return [];
-    }
-
-    for (const event of entry.value.events) {
+  const rawEvents = groupResults.flatMap((result) => {
+    for (const event of result.events) {
       eventRelayHints.set(event.id, [
-        ...new Set([
-          ...(eventRelayHints.get(event.id) ?? []),
-          entry.value.relay,
-        ]),
+        ...new Set([...(eventRelayHints.get(event.id) ?? []), result.relay]),
       ]);
     }
 
-    return entry.value.events;
+    return result.events;
   });
 
   const uniqueEvents = [
     ...new Map(rawEvents.map((event) => [event.id, event])).values(),
-  ]
-    .sort((a, b) => b.created_at - a.created_at)
-    .slice(0, limit);
+  ].sort((a, b) => b.created_at - a.created_at);
+
+  const audienceReactionsByTarget = new Map<string, NrAudienceReaction[]>();
+
+  for (const event of uniqueEvents) {
+    if (event.kind !== 7) {
+      continue;
+    }
+
+    const targetEventId = reactionTargetId(event);
+
+    if (!targetEventId) {
+      continue;
+    }
+
+    const reactions = audienceReactionsByTarget.get(targetEventId) ?? [];
+
+    reactions.push({
+      pubkey: event.pubkey,
+      content: event.content,
+      createdAt: event.created_at,
+    });
+
+    audienceReactionsByTarget.set(targetEventId, reactions);
+  }
 
   await sendFetchStatus({
     params,
@@ -229,6 +538,7 @@ export async function adaptFetchLatestCommand(
 
   for (const rawEvent of uniqueEvents) {
     evaluatedProgress += 1;
+    const eventStartedAt = Date.now();
 
     await sendFetchStatus({
       params,
@@ -247,7 +557,13 @@ export async function adaptFetchLatestCommand(
       continue;
     }
 
-    if (hasNrEvent(params.db, rawEvent.id)) {
+    const cachedEvent = getNr(params.db, rawEvent.id);
+
+    if (
+      cachedEvent &&
+      rawEvent.kind === 1 &&
+      !needsNestedReferences(cachedEvent)
+    ) {
       skippedCached += 1;
       continue;
     }
@@ -267,27 +583,124 @@ export async function adaptFetchLatestCommand(
     try {
       const relayHints = eventRelayHints.get(parsed.data.id) ?? [];
 
+      await sendFetchStatus({
+        params,
+        message: `Loading context (${evaluatedProgress}/${uniqueEvents.length})`,
+        output: [
+          '1. Fetched Nostr posts.',
+          `2. ${uniqueEvents.length} posts are fetched.`,
+          `3. Loading context (${evaluatedProgress}/${uniqueEvents.length})`,
+        ].join('\n'),
+        progress:
+          uniqueEvents.length > 0 ? evaluatedProgress / uniqueEvents.length : 1,
+      });
+
+      const contextStartedAt = Date.now();
+
+      const contextRelays = [
+        ...relayHints,
+        ...parseRelayUrls(process.env.BOT_RELAYS ?? ''),
+      ];
+
       const threadContextResult = await fetchNip10ThreadContext({
         pool: params.storedCtx.pool,
         event: parsed.data,
-        fallbackRelays: [
-          ...relayHints,
-          ...parseRelayUrls(process.env.BOT_RELAYS ?? ''),
-        ],
+        fallbackRelays: contextRelays,
       });
 
       const referencedEventsResult = await fetchReferencedEvents({
         pool: params.storedCtx.pool,
         content: parsed.data.content,
-        fallbackRelays: [
-          ...relayHints,
-          ...parseRelayUrls(process.env.BOT_RELAYS ?? ''),
-        ],
+        fallbackRelays: contextRelays,
       });
+
+      const tagReferencedEventsResult = await fetchTagReferencedEvents({
+        pool: params.storedCtx.pool,
+        event: parsed.data,
+        fallbackRelays: contextRelays,
+      });
+
+      let embeddedRepost: NostrEvent | null = null;
+
+      if (parsed.data.kind === 6) {
+        try {
+          const embedded = NostrEventSchema.safeParse(
+            JSON.parse(parsed.data.content),
+          );
+
+          embeddedRepost = embedded.success ? embedded.data : null;
+        } catch {
+          embeddedRepost = null;
+        }
+      }
+
+      const directlyReferencedEvents = [
+        ...new Map(
+          [
+            ...referencedEventsResult.events,
+            ...tagReferencedEventsResult.events,
+            ...(embeddedRepost ? [embeddedRepost] : []),
+          ].map((event) => [event.id, event]),
+        ).values(),
+      ];
+
+      const activityTarget =
+        parsed.data.kind === 6 ||
+        parsed.data.kind === 7 ||
+        parsed.data.kind === 16
+          ? directlyReferencedEvents[0]
+          : null;
+
+      const nestedSources = activityTarget
+        ? [activityTarget]
+        : [
+            ...new Map(
+              [
+                ...threadContextResult.events,
+                ...referencedEventsResult.events,
+              ].map((event) => [event.id, event]),
+            ).values(),
+          ].slice(0, 5);
+
+      const nestedResults = await Promise.all(
+        nestedSources.map(async (nestedSource) =>
+          Promise.all([
+            fetchReferencedEvents({
+              pool: params.storedCtx.pool,
+              content: nestedSource.content,
+              fallbackRelays: contextRelays,
+            }),
+            fetchNip10ThreadContext({
+              pool: params.storedCtx.pool,
+              event: nestedSource,
+              fallbackRelays: contextRelays,
+            }),
+          ]),
+        ),
+      );
+
+      const referencedEvents = [
+        ...new Map(
+          [
+            ...directlyReferencedEvents,
+            ...nestedResults.flatMap(
+              ([nestedContentResult, nestedThreadResult]) => [
+                ...nestedContentResult.events,
+                ...nestedThreadResult.events,
+              ],
+            ),
+          ].map((event) => [event.id, event]),
+        ).values(),
+      ];
+
+      debug(
+        `nr fetch-latest: loaded context for ${parsed.data.id} in ${Date.now() - contextStartedAt}ms; thread=${threadContextResult.events.length}/${threadContextResult.references.length}, references=${referencedEventsResult.events.length}/${referencedEventsResult.references.length}`,
+      );
 
       if (
         threadContextResult.missingIds.length > 0 ||
-        referencedEventsResult.missingIds.length > 0
+        referencedEventsResult.missingIds.length > 0 ||
+        tagReferencedEventsResult.missingIds.length > 0
       ) {
         deferredIncomplete += 1;
 
@@ -298,15 +711,52 @@ export async function adaptFetchLatestCommand(
         continue;
       }
 
-      const classification = await classifyEventWithNrAi({
-        db: params.db,
-        event: parsed.data,
-        instructions,
-        threadContextEvents: threadContextResult.events,
-        referencedEvents: referencedEventsResult.events,
-        storedCtx: params.storedCtx,
-        runAgent: params.runAgent,
+      await sendFetchStatus({
+        params,
+        message: `Classifying posts (${evaluatedProgress}/${uniqueEvents.length})`,
+        output: [
+          '1. Fetched Nostr posts.',
+          `2. ${uniqueEvents.length} posts are fetched.`,
+          `3. Classifying posts (${evaluatedProgress}/${uniqueEvents.length})`,
+        ].join('\n'),
+        progress:
+          uniqueEvents.length > 0 ? evaluatedProgress / uniqueEvents.length : 1,
       });
+
+      const classificationStartedAt = Date.now();
+
+      const classificationEvent =
+        parsed.data.kind === 6 ||
+        parsed.data.kind === 7 ||
+        parsed.data.kind === 16
+          ? referencedEvents[0]
+          : parsed.data;
+
+      const classification = classificationEvent
+        ? await classifyEventWithNrAi({
+            db: params.db,
+            event: classificationEvent,
+            instructions,
+            threadContextEvents: threadContextResult.events,
+            referencedEvents,
+            audienceReactions:
+              audienceReactionsByTarget.get(classificationEvent.id) ?? [],
+            storedCtx: params.storedCtx,
+            runAgent: params.runAgent,
+          })
+        : {
+            topics: [],
+            moods: [],
+            summary: '',
+            model: 'activity',
+            confidence: 1,
+            skip: false,
+            skipReason: null,
+          };
+
+      debug(
+        `nr fetch-latest: classified ${parsed.data.id} in ${Date.now() - classificationStartedAt}ms with ${classification.model}`,
+      );
 
       if (classification.model.includes(':fallback')) {
         evaluatedByFallback += 1;
@@ -325,18 +775,42 @@ export async function adaptFetchLatestCommand(
         continue;
       }
 
+      if (parsed.data.kind === 7 && classificationEvent) {
+        const cachedTarget = getNr(params.db, classificationEvent.id);
+
+        if (cachedTarget) {
+          await parseAndStoreEvent({
+            db: params.db,
+            event: classificationEvent,
+            forceReclassify: true,
+            relayHints: cachedTarget.relay_hints,
+            threadContext: JSON.parse(
+              cachedTarget.thread_context_json,
+            ) as NostrEvent[],
+            referencedEvents: JSON.parse(
+              cachedTarget.referenced_events_json,
+            ) as NostrEvent[],
+            classify: () => classification,
+          });
+        }
+      }
+
       const result = await parseAndStoreEvent({
         db: params.db,
         event: parsed.data,
-        forceReclassify: false,
+        forceReclassify: parsed.data.kind !== 1,
         relayHints,
         threadContext: threadContextResult.events,
-        referencedEvents: referencedEventsResult.events,
+        referencedEvents,
         classify: () => classification,
       });
 
       stored += result.inserted ? 1 : 0;
       storedIds.push(result.event.id);
+
+      debug(
+        `nr fetch-latest: processed ${parsed.data.id} in ${Date.now() - eventStartedAt}ms; stored=${result.inserted}`,
+      );
     } catch (error) {
       failedEvents += 1;
       eventErrors.push(`${parsed.data.id}: ${errorMessage(error)}`);
@@ -351,7 +825,7 @@ export async function adaptFetchLatestCommand(
     failedRelayCount === relayAuthorGroups.length &&
     relayAuthorGroups.length > 0
       ? 'failed'
-      : failedRelayCount > 0 || failedEvents > 0
+      : incompleteRelayCount > 0 || failedEvents > 0
         ? 'partial'
         : 'fetched';
 
@@ -359,7 +833,14 @@ export async function adaptFetchLatestCommand(
     failedRelayCount > 0
       ? `${failedRelayCount}/${relayAuthorGroups.length} relay group(s) failed`
       : null,
+    incompleteRelayCount > 0
+      ? `${incompleteRelayCount}/${relayAuthorGroups.length} relay group(s) remain resumable`
+      : null,
     failedEvents > 0 ? `${failedEvents} event(s) failed processing` : null,
+    ...groupResults
+      .filter((result) => result.error !== null)
+      .slice(0, 3)
+      .map((result) => `${result.relay}: ${result.error}`),
   ].filter((item): item is string => item !== null);
 
   recordNrFetchWindow({
@@ -383,7 +864,9 @@ export async function adaptFetchLatestCommand(
     `Window: ${formatTimestamp(since)} → ${formatTimestamp(until)}`,
     explicitSince === null ? `Since hours: ${sinceHours}` : null,
     `Relay groups: ${relayAuthorGroups.length}`,
+    `Relay pages queried: ${pageCount}`,
     `Failed relay groups: ${failedRelayCount}`,
+    `Incomplete relay groups: ${incompleteRelayCount}`,
     `Fetch coverage status: ${status}`,
     `Events returned: ${rawEvents.length}`,
     `Unique events considered: ${uniqueEvents.length}`,

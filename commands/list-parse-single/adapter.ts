@@ -195,6 +195,7 @@ export async function adaptListParseSingleCommand(
         instructions,
         threadContextEvents: threadContextResult.events,
         referencedEvents: referencedEventsResult.events,
+        audienceReactions: [],
         storedCtx: params.storedCtx,
         runAgent: params.runAgent,
       }),

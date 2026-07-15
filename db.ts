@@ -7,20 +7,30 @@ import { join } from 'path';
 import { Database, type Database as DatabaseType } from 'bun:sqlite';
 
 import { classifyEvent } from './classifier';
+import {
+  categoryForNrEvent,
+  normalizeNrFeedCategories,
+  type NrFeedCategory,
+} from './commands/list/categories';
 import type {
   EventClassification,
   NostrEvent,
   NrEvent,
   NrFetchScope,
+  NrFetchRelayCursor,
   NrFetchStatus,
   NrFetchWindow,
   NrInteraction,
   NrInteractionType,
+  NrAudienceReaction,
+  NrInterestSignal,
+  NrInterestSignalType,
   NrListMode,
   NrListData,
   NrTagGroup,
   NrTaxonomyTerm,
   NrTaxonomyTermType,
+  NrProfileEvent,
   ParsedNrEventResult,
 } from './commands/shared/types';
 import { extractEventReferences } from './references';
@@ -65,6 +75,21 @@ type FetchWindowRow = {
   updated_at: number;
 };
 
+type FetchRelayCursorRow = {
+  since: number;
+  until: number;
+  scope: string;
+  relay: string;
+  authors_hash: string;
+  authors_json: string;
+  next_until: number;
+  completed: number;
+  fetched_event_count: number;
+  last_error: string | null;
+  created_at: number;
+  updated_at: number;
+};
+
 type SkippedEventRow = {
   event_id: string;
   pubkey: string;
@@ -82,6 +107,17 @@ type InteractionRow = {
   interaction_created_at: number;
   discovered_at: number;
   source: string;
+};
+
+type InterestSignalRow = {
+  target_event_id: string;
+  type: string;
+  weight: number;
+  topics_json: string;
+  moods_json: string;
+  source: string;
+  created_at: number;
+  updated_at: number;
 };
 
 type TaxonomyTermRow = {
@@ -111,6 +147,27 @@ export type ListNrFetchWindowsProps = {
   since: number;
   until: number;
   scopes: NrFetchScope[] | null;
+};
+
+export type SaveNrFetchRelayCursorProps = {
+  db: DatabaseType;
+  since: number;
+  until: number;
+  scope: NrFetchScope;
+  relay: string;
+  authorsHash: string;
+  authors: string[];
+  nextUntil: number;
+  completed: boolean;
+  fetchedEventCount: number;
+  lastError: string | null;
+};
+
+export type ListNrFetchRelayCursorsProps = {
+  db: DatabaseType;
+  since: number;
+  until: number;
+  scope: NrFetchScope;
 };
 
 export type RecordNrSkippedEventProps = {
@@ -233,6 +290,23 @@ function rowToNrFetchWindow(row: FetchWindowRow): NrFetchWindow {
   };
 }
 
+function rowToNrFetchRelayCursor(row: FetchRelayCursorRow): NrFetchRelayCursor {
+  return {
+    since: row.since,
+    until: row.until,
+    scope: row.scope as NrFetchScope,
+    relay: row.relay,
+    authorsHash: row.authors_hash,
+    authors: safeParseStringArray(row.authors_json),
+    nextUntil: row.next_until,
+    completed: row.completed === 1,
+    fetchedEventCount: row.fetched_event_count,
+    lastError: row.last_error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 function rowToNrInteraction(row: InteractionRow): NrInteraction {
   return {
     interactionEventId: row.interaction_event_id,
@@ -252,6 +326,19 @@ function rowToNrTaxonomyTerm(row: TaxonomyTermRow): NrTaxonomyTerm {
     tag: row.tag,
     description: row.description,
     active: row.active === 1,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function rowToNrInterestSignal(row: InterestSignalRow): NrInterestSignal {
+  return {
+    targetEventId: row.target_event_id,
+    type: row.type as NrInterestSignalType,
+    weight: row.weight,
+    topics: safeParseStringArray(row.topics_json),
+    moods: safeParseStringArray(row.moods_json),
+    source: row.source as NrInterestSignal['source'],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -363,6 +450,29 @@ export function createNrTable(db: DatabaseType): void {
   `);
 
   db.run(`
+    CREATE TABLE IF NOT EXISTS nr_fetch_relay_cursors (
+      since               INTEGER NOT NULL,
+      until               INTEGER NOT NULL,
+      scope               TEXT    NOT NULL,
+      relay               TEXT    NOT NULL,
+      authors_hash        TEXT    NOT NULL,
+      authors_json        TEXT    NOT NULL,
+      next_until          INTEGER NOT NULL,
+      completed           INTEGER NOT NULL DEFAULT 0 CHECK (completed IN (0, 1)),
+      fetched_event_count INTEGER NOT NULL DEFAULT 0,
+      last_error          TEXT,
+      created_at          INTEGER NOT NULL,
+      updated_at          INTEGER NOT NULL,
+      PRIMARY KEY (since, until, scope, relay, authors_hash)
+    )
+  `);
+
+  db.run(`
+    CREATE INDEX IF NOT EXISTS idx_nr_fetch_relay_cursors_window
+    ON nr_fetch_relay_cursors(since, until, scope, completed)
+  `);
+
+  db.run(`
     CREATE TABLE IF NOT EXISTS nr_skipped_events (
       event_id         TEXT    PRIMARY KEY,
       pubkey           TEXT    NOT NULL,
@@ -391,6 +501,50 @@ export function createNrTable(db: DatabaseType): void {
   `);
 
   db.run(`
+    CREATE TABLE IF NOT EXISTS nr_list_filters (
+      mode            TEXT PRIMARY KEY CHECK (mode IN ('timeline', 'profile')),
+      categories_json TEXT NOT NULL,
+      updated_at      INTEGER NOT NULL
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS nr_profile_events (
+      id                     TEXT PRIMARY KEY,
+      event_created_at       INTEGER NOT NULL,
+      event_json             TEXT NOT NULL,
+      referenced_events_json TEXT NOT NULL,
+      cached_at              INTEGER NOT NULL
+    )
+  `);
+
+  db.run(`
+    CREATE INDEX IF NOT EXISTS idx_nr_profile_events_created_at
+    ON nr_profile_events(event_created_at DESC)
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS nr_profile_cache_state (
+      id              INTEGER PRIMARY KEY CHECK (id = 1),
+      categories_json TEXT NOT NULL,
+      updated_at      INTEGER NOT NULL
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS nr_activity_targets (
+      activity_event_id TEXT NOT NULL REFERENCES nr_events(id) ON DELETE CASCADE,
+      target_event_id   TEXT NOT NULL,
+      PRIMARY KEY (activity_event_id, target_event_id)
+    )
+  `);
+
+  db.run(`
+    CREATE INDEX IF NOT EXISTS idx_nr_activity_targets_target
+    ON nr_activity_targets(target_event_id)
+  `);
+
+  db.run(`
     CREATE INDEX IF NOT EXISTS idx_nr_interactions_target
     ON nr_interactions(target_event_id)
   `);
@@ -398,6 +552,52 @@ export function createNrTable(db: DatabaseType): void {
   db.run(`
     CREATE INDEX IF NOT EXISTS idx_nr_interactions_user_target_type
     ON nr_interactions(user_pubkey, target_event_id, type)
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS nr_interest_signals (
+      target_event_id TEXT    NOT NULL,
+      type            TEXT    NOT NULL CHECK (type IN ('like', 'reply', 'repost', 'quote', 'archive', 'local_like', 'local_dislike')),
+      weight          INTEGER NOT NULL,
+      topics_json     TEXT    NOT NULL,
+      moods_json      TEXT    NOT NULL,
+      source          TEXT    NOT NULL CHECK (source IN ('interaction', 'archive', 'private', 'seed')),
+      created_at      INTEGER NOT NULL,
+      updated_at      INTEGER NOT NULL,
+      PRIMARY KEY (target_event_id, type)
+    )
+  `);
+
+  ensureNrInterestSignalColumn(
+    db,
+    'source',
+    "TEXT NOT NULL DEFAULT 'private' CHECK (source IN ('interaction', 'archive', 'private', 'seed'))",
+  );
+
+  migrateNrInterestSignalTypes(db);
+
+  db.run(`
+    CREATE INDEX IF NOT EXISTS idx_nr_interest_signals_updated
+    ON nr_interest_signals(updated_at DESC)
+  `);
+
+  backfillNrInterestSignals(db);
+  refreshNrInterestSignalWeights(db);
+}
+
+function refreshNrInterestSignalWeights(db: DatabaseType): void {
+  db.run(`
+    UPDATE nr_interest_signals
+    SET weight = CASE type
+      WHEN 'like' THEN 1
+      WHEN 'reply' THEN 2
+      WHEN 'repost' THEN 3
+      WHEN 'quote' THEN 2
+      WHEN 'archive' THEN 5
+      WHEN 'local_like' THEN 5
+      WHEN 'local_dislike' THEN -5
+      ELSE weight
+    END
   `);
 }
 
@@ -415,6 +615,76 @@ function ensureNrEventColumn(
   }
 
   db.run(`ALTER TABLE nr_events ADD COLUMN ${name} ${definition}`);
+}
+
+function ensureNrInterestSignalColumn(
+  db: DatabaseType,
+  name: string,
+  definition: string,
+): void {
+  const columns = db
+    .prepare('PRAGMA table_info(nr_interest_signals)')
+    .all() as Array<{ name: string }>;
+
+  if (columns.some((column) => column.name === name)) {
+    return;
+  }
+
+  db.run(`ALTER TABLE nr_interest_signals ADD COLUMN ${name} ${definition}`);
+}
+
+function migrateNrInterestSignalTypes(db: DatabaseType): void {
+  const table = db
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'nr_interest_signals'",
+    )
+    .get() as { sql: string } | null;
+
+  if (table?.sql.includes("'local_like'")) {
+    return;
+  }
+
+  db.transaction(() => {
+    db.run(`
+      CREATE TABLE nr_interest_signals_next (
+        target_event_id TEXT    NOT NULL,
+        type            TEXT    NOT NULL CHECK (type IN ('like', 'reply', 'repost', 'quote', 'archive', 'local_like', 'local_dislike')),
+        weight          INTEGER NOT NULL,
+        topics_json     TEXT    NOT NULL,
+        moods_json      TEXT    NOT NULL,
+        source          TEXT    NOT NULL CHECK (source IN ('interaction', 'archive', 'private', 'seed')),
+        created_at      INTEGER NOT NULL,
+        updated_at      INTEGER NOT NULL,
+        PRIMARY KEY (target_event_id, type)
+      )
+    `);
+
+    db.run(`
+      INSERT INTO nr_interest_signals_next (
+        target_event_id, type, weight, topics_json, moods_json, source, created_at, updated_at
+      )
+      SELECT
+        target_event_id,
+        CASE
+          WHEN type = 'dislike' THEN 'local_dislike'
+          WHEN type = 'like' AND source = 'private' THEN 'local_like'
+          ELSE type
+        END,
+        weight,
+        topics_json,
+        moods_json,
+        source,
+        created_at,
+        updated_at
+      FROM nr_interest_signals
+    `);
+
+    db.run('DROP TABLE nr_interest_signals');
+
+    db.run(
+      'ALTER TABLE nr_interest_signals_next RENAME TO nr_interest_signals',
+    );
+  })();
 }
 
 export function hasNrEvent(db: DatabaseType, id: string): boolean {
@@ -544,6 +814,250 @@ export function listNrInteractions(db: DatabaseType): NrInteraction[] {
     .all() as InteractionRow[];
 
   return rows.map(rowToNrInteraction);
+}
+
+export function listNrAudienceReactions(
+  db: DatabaseType,
+  targetEventId: string,
+): NrAudienceReaction[] {
+  const rows = db
+    .prepare(
+      `SELECT event.pubkey, event.content, event.event_created_at
+       FROM nr_activity_targets target
+       JOIN nr_events event ON event.id = target.activity_event_id
+       WHERE target.target_event_id = ? AND event.kind = 7
+       ORDER BY event.event_created_at DESC`,
+    )
+    .all(targetEventId) as Array<{
+    pubkey: string;
+    content: string;
+    event_created_at: number;
+  }>;
+
+  const byPubkey = new Map<string, NrAudienceReaction>();
+
+  for (const row of rows) {
+    if (!byPubkey.has(row.pubkey)) {
+      byPubkey.set(row.pubkey, {
+        pubkey: row.pubkey,
+        content: row.content,
+        createdAt: row.event_created_at,
+      });
+    }
+  }
+
+  return [...byPubkey.values()];
+}
+
+const NR_INTEREST_WEIGHTS: Record<NrInterestSignalType, number> = {
+  like: 1,
+  reply: 2,
+  repost: 3,
+  quote: 2,
+  archive: 5,
+  local_like: 5,
+  local_dislike: -5,
+};
+
+function interestTags({
+  db,
+  targetEventId,
+  type,
+}: {
+  db: DatabaseType;
+  targetEventId: string;
+  type: 'topic' | 'mood';
+}): string[] {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT tag
+       FROM (
+         SELECT tag.tag
+         FROM nr_event_tags tag
+         WHERE tag.event_id = ? AND tag.type = ?
+         UNION
+         SELECT tag.tag
+         FROM nr_activity_targets activity
+         JOIN nr_event_tags tag ON tag.event_id = activity.activity_event_id
+         WHERE activity.target_event_id = ? AND tag.type = ?
+       )
+       ORDER BY tag COLLATE NOCASE ASC`,
+    )
+    .all(targetEventId, type, targetEventId, type) as Array<{ tag: string }>;
+
+  return rows.map((row) => row.tag);
+}
+
+export function recordNrInterestSignal({
+  db,
+  targetEventId,
+  type,
+  createdAt,
+  topics: providedTopics,
+  moods: providedMoods,
+  source,
+}: {
+  db: DatabaseType;
+  targetEventId: string;
+  type: NrInterestSignalType;
+  createdAt: number;
+  topics: string[] | null;
+  moods: string[] | null;
+  source: NrInterestSignal['source'];
+}): NrInterestSignal {
+  const now = Date.now();
+
+  const topics =
+    providedTopics ?? interestTags({ db, targetEventId, type: 'topic' });
+
+  const moods =
+    providedMoods ?? interestTags({ db, targetEventId, type: 'mood' });
+
+  db.run(
+    `INSERT INTO nr_interest_signals (
+       target_event_id, type, weight, topics_json, moods_json, source, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(target_event_id, type) DO UPDATE SET
+       weight = excluded.weight,
+       topics_json = excluded.topics_json,
+       moods_json = excluded.moods_json,
+       source = excluded.source,
+       updated_at = excluded.updated_at`,
+    [
+      targetEventId,
+      type,
+      NR_INTEREST_WEIGHTS[type],
+      JSON.stringify(topics),
+      JSON.stringify(moods),
+      source,
+      createdAt,
+      now,
+    ],
+  );
+
+  const row = db
+    .prepare(
+      'SELECT * FROM nr_interest_signals WHERE target_event_id = ? AND type = ?',
+    )
+    .get(targetEventId, type) as InterestSignalRow | null;
+
+  if (!row) {
+    throw new Error(`Failed to record ${type} signal for ${targetEventId}`);
+  }
+
+  return rowToNrInterestSignal(row);
+}
+
+export function listNrInterestSignals(db: DatabaseType): NrInterestSignal[] {
+  return (
+    db
+      .prepare(
+        'SELECT * FROM nr_interest_signals ORDER BY updated_at DESC, target_event_id ASC',
+      )
+      .all() as InterestSignalRow[]
+  ).map(rowToNrInterestSignal);
+}
+
+export function clearSeededNrInterestSignals(db: DatabaseType): number {
+  const existing = db
+    .prepare(
+      "SELECT COUNT(*) AS count FROM nr_interest_signals WHERE source = 'seed'",
+    )
+    .get() as { count: number };
+
+  db.run("DELETE FROM nr_interest_signals WHERE source = 'seed'");
+
+  return existing.count;
+}
+
+export function setNrLocalPreference({
+  db,
+  targetEventId,
+  preference,
+}: {
+  db: DatabaseType;
+  targetEventId: string;
+  preference: 'like' | 'dislike' | 'none';
+}): NrInterestSignal | null {
+  return db.transaction(() => {
+    db.run(
+      `DELETE FROM nr_interest_signals
+       WHERE target_event_id = ?
+         AND type IN ('local_like', 'local_dislike')`,
+      [targetEventId],
+    );
+
+    if (preference === 'none') {
+      return null;
+    }
+
+    return recordNrInterestSignal({
+      db,
+      targetEventId,
+      type: preference === 'like' ? 'local_like' : 'local_dislike',
+      createdAt: Date.now(),
+      topics: null,
+      moods: null,
+      source: 'private',
+    });
+  })();
+}
+
+function backfillNrInterestSignals(db: DatabaseType): void {
+  const interactionTypes: Record<NrInteractionType, NrInterestSignalType> = {
+    liked: 'like',
+    replied: 'reply',
+    reposted: 'repost',
+    quoted: 'quote',
+  };
+
+  const interactions = db
+    .prepare(
+      `SELECT target_event_id, type, interaction_created_at
+       FROM nr_interactions
+       ORDER BY interaction_created_at ASC`,
+    )
+    .all() as Array<{
+    target_event_id: string;
+    type: NrInteractionType;
+    interaction_created_at: number;
+  }>;
+
+  for (const interaction of interactions) {
+    recordNrInterestSignal({
+      db,
+      targetEventId: interaction.target_event_id,
+      type: interactionTypes[interaction.type],
+      createdAt: interaction.interaction_created_at * 1000,
+      topics: null,
+      moods: null,
+      source: 'interaction',
+    });
+  }
+
+  const archivedTargets = db
+    .prepare(
+      `SELECT DISTINCT
+         COALESCE(activity.target_event_id, event.id) AS target_event_id,
+         event.archived_at
+       FROM nr_events event
+       LEFT JOIN nr_activity_targets activity
+         ON activity.activity_event_id = event.id
+       WHERE event.archived_at IS NOT NULL`,
+    )
+    .all() as Array<{ target_event_id: string; archived_at: number }>;
+
+  for (const archived of archivedTargets) {
+    recordNrInterestSignal({
+      db,
+      targetEventId: archived.target_event_id,
+      type: 'archive',
+      createdAt: archived.archived_at,
+      topics: null,
+      moods: null,
+      source: 'archive',
+    });
+  }
 }
 
 export function listNrTaxonomyTerms(db: DatabaseType): NrTaxonomyTerm[] {
@@ -824,6 +1338,112 @@ export function listNrFetchWindows({
   return rows.map(rowToNrFetchWindow);
 }
 
+export function saveNrFetchRelayCursor({
+  db,
+  since,
+  until,
+  scope,
+  relay,
+  authorsHash,
+  authors,
+  nextUntil,
+  completed,
+  fetchedEventCount,
+  lastError,
+}: SaveNrFetchRelayCursorProps): NrFetchRelayCursor {
+  assertFetchWindowRange(since, until);
+
+  if (!Number.isInteger(nextUntil) || nextUntil < since || nextUntil > until) {
+    throw new Error('Fetch relay cursor requires nextUntil inside its window.');
+  }
+
+  if (!Number.isInteger(fetchedEventCount) || fetchedEventCount < 0) {
+    throw new Error('Fetch relay cursor requires a non-negative event count.');
+  }
+
+  const now = Date.now();
+
+  db.run(
+    `
+    INSERT INTO nr_fetch_relay_cursors (
+      since,
+      until,
+      scope,
+      relay,
+      authors_hash,
+      authors_json,
+      next_until,
+      completed,
+      fetched_event_count,
+      last_error,
+      created_at,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(since, until, scope, relay, authors_hash) DO UPDATE SET
+      authors_json = excluded.authors_json,
+      next_until = excluded.next_until,
+      completed = excluded.completed,
+      fetched_event_count = excluded.fetched_event_count,
+      last_error = excluded.last_error,
+      updated_at = excluded.updated_at
+  `,
+    [
+      since,
+      until,
+      scope,
+      relay,
+      authorsHash,
+      JSON.stringify(authors),
+      nextUntil,
+      completed ? 1 : 0,
+      fetchedEventCount,
+      lastError,
+      now,
+      now,
+    ],
+  );
+
+  const row = db
+    .prepare(
+      `
+      SELECT *
+      FROM nr_fetch_relay_cursors
+      WHERE since = ? AND until = ? AND scope = ? AND relay = ? AND authors_hash = ?
+    `,
+    )
+    .get(since, until, scope, relay, authorsHash) as
+    | FetchRelayCursorRow
+    | undefined;
+
+  if (!row) {
+    throw new Error('Failed to save fetch relay cursor.');
+  }
+
+  return rowToNrFetchRelayCursor(row);
+}
+
+export function listNrFetchRelayCursors({
+  db,
+  since,
+  until,
+  scope,
+}: ListNrFetchRelayCursorsProps): NrFetchRelayCursor[] {
+  assertFetchWindowRange(since, until);
+
+  const rows = db
+    .prepare(
+      `
+      SELECT *
+      FROM nr_fetch_relay_cursors
+      WHERE since = ? AND until = ? AND scope = ?
+      ORDER BY relay ASC, authors_hash ASC
+    `,
+    )
+    .all(since, until, scope) as FetchRelayCursorRow[];
+
+  return rows.map(rowToNrFetchRelayCursor);
+}
+
 function getEventRow(db: DatabaseType, id: string): EventRow | null {
   const row = db
     .prepare(
@@ -965,6 +1585,26 @@ export async function parseAndStoreEvent({
     ],
   );
 
+  if (event.kind !== 1) {
+    const targetIds = [
+      ...new Set(
+        [...threadContext, ...referencedEvents].map((item) => item.id),
+      ),
+    ];
+
+    db.run('DELETE FROM nr_activity_targets WHERE activity_event_id = ?', [
+      event.id,
+    ]);
+
+    const insertTarget = db.prepare(
+      'INSERT OR IGNORE INTO nr_activity_targets (activity_event_id, target_event_id) VALUES (?, ?)',
+    );
+
+    for (const targetId of targetIds) {
+      insertTarget.run(event.id, targetId);
+    }
+  }
+
   const shouldClassify = forceReclassify || !existing?.classification_json;
 
   if (shouldClassify) {
@@ -1034,19 +1674,29 @@ export function markEventState({
 }: MarkEventStateProps): NrEvent | null {
   const existing = getNr(db, eventId);
 
-  if (!existing) {
-    return null;
-  }
-
   const column = markColumnForState(state);
   const value = markValueForState(state);
 
-  const relatedIds = [
-    ...relatedEventIds(existing.thread_context_json),
-    ...relatedEventIds(existing.referenced_events_json),
-  ];
+  const relatedIds = existing
+    ? [
+        ...relatedEventIds(existing.thread_context_json),
+        ...relatedEventIds(existing.referenced_events_json),
+      ]
+    : [];
 
-  db.run(`UPDATE nr_events SET ${column} = ? WHERE id = ?`, [value, eventId]);
+  const activityIds = db
+    .prepare(
+      'SELECT activity_event_id FROM nr_activity_targets WHERE target_event_id = ?',
+    )
+    .all(eventId) as Array<{ activity_event_id: string }>;
+
+  if (!existing && activityIds.length === 0) {
+    return null;
+  }
+
+  if (existing) {
+    db.run(`UPDATE nr_events SET ${column} = ? WHERE id = ?`, [value, eventId]);
+  }
 
   if (relatedIds.length > 0) {
     const markRelated = db.prepare(
@@ -1058,7 +1708,18 @@ export function markEventState({
     }
   }
 
-  return getNr(db, eventId);
+  for (const { activity_event_id } of activityIds) {
+    db.run(`UPDATE nr_events SET ${column} = ? WHERE id = ?`, [
+      value,
+      activity_event_id,
+    ]);
+  }
+
+  return existing
+    ? getNr(db, eventId)
+    : activityIds[0]
+      ? getNr(db, activityIds[0].activity_event_id)
+      : null;
 }
 
 export function markTaggedEventsRead({
@@ -1208,6 +1869,135 @@ function listModePredicate(mode: NrListMode): string {
   return mode === 'archive' ? 'e.archived_at IS NOT NULL' : 'e.read_at IS NULL';
 }
 
+export function getNrListFilter({
+  db,
+  mode,
+}: {
+  db: DatabaseType;
+  mode: 'timeline' | 'profile';
+}): NrFeedCategory[] {
+  const row = db
+    .prepare('SELECT categories_json FROM nr_list_filters WHERE mode = ?')
+    .get(mode) as { categories_json: string } | null;
+
+  if (!row) {
+    return normalizeNrFeedCategories([]);
+  }
+
+  try {
+    return normalizeNrFeedCategories(
+      JSON.parse(row.categories_json) as unknown,
+    );
+  } catch {
+    return normalizeNrFeedCategories([]);
+  }
+}
+
+export function saveNrListFilter({
+  db,
+  mode,
+  categories,
+}: {
+  db: DatabaseType;
+  mode: 'timeline' | 'profile';
+  categories: NrFeedCategory[];
+}): NrFeedCategory[] {
+  const normalized = normalizeNrFeedCategories(categories);
+
+  db.run(
+    `INSERT INTO nr_list_filters (mode, categories_json, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(mode) DO UPDATE SET categories_json = excluded.categories_json, updated_at = excluded.updated_at`,
+    [mode, JSON.stringify(normalized), Date.now()],
+  );
+
+  return normalized;
+}
+
+export function listNrProfileEvents({
+  db,
+  categories,
+}: {
+  db: DatabaseType;
+  categories: NrFeedCategory[];
+}): NrProfileEvent[] {
+  const state = db
+    .prepare('SELECT categories_json FROM nr_profile_cache_state WHERE id = 1')
+    .get() as { categories_json: string } | null;
+
+  if (!state || state.categories_json !== JSON.stringify(categories)) {
+    return [];
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT event_json, referenced_events_json
+       FROM nr_profile_events
+       ORDER BY event_created_at DESC
+       LIMIT 50`,
+    )
+    .all() as Array<{ event_json: string; referenced_events_json: string }>;
+
+  return rows.flatMap((row) => {
+    try {
+      const event = JSON.parse(row.event_json) as NostrEvent;
+
+      const referencedEvents = JSON.parse(
+        row.referenced_events_json,
+      ) as NostrEvent[];
+
+      return [{ event, referencedEvents }];
+    } catch {
+      return [];
+    }
+  });
+}
+
+export function saveNrProfileEvents({
+  db,
+  events,
+  categories,
+}: {
+  db: DatabaseType;
+  events: NrProfileEvent[];
+  categories: NrFeedCategory[];
+}): void {
+  db.run('DELETE FROM nr_profile_events');
+
+  const insert = db.prepare(
+    `INSERT INTO nr_profile_events (
+      id, event_created_at, event_json, referenced_events_json, cached_at
+    ) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      event_json = excluded.event_json,
+      referenced_events_json = excluded.referenced_events_json,
+      cached_at = excluded.cached_at`,
+  );
+
+  for (const { event, referencedEvents } of events) {
+    insert.run(
+      event.id,
+      event.created_at,
+      JSON.stringify(event),
+      JSON.stringify(referencedEvents),
+      Date.now(),
+    );
+  }
+
+  db.run(
+    `DELETE FROM nr_profile_events WHERE id NOT IN (
+      SELECT id FROM nr_profile_events ORDER BY event_created_at DESC LIMIT 50
+    )`,
+  );
+
+  db.run(
+    `INSERT INTO nr_profile_cache_state (id, categories_json, updated_at)
+     VALUES (1, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET categories_json = excluded.categories_json, updated_at = excluded.updated_at`,
+    [JSON.stringify(categories), Date.now()],
+  );
+}
+
 type ListTagsProps = {
   db: DatabaseType;
   type: 'topic' | 'mood';
@@ -1237,6 +2027,7 @@ type ListEventsForTagProps = {
   tag: string;
   hiddenEventIds: Set<string>;
   mode: NrListMode;
+  categories: NrFeedCategory[];
 };
 
 function listEventsForTag({
@@ -1245,8 +2036,20 @@ function listEventsForTag({
   tag,
   hiddenEventIds,
   mode,
+  categories,
 }: ListEventsForTagProps): NrEvent[] {
   const predicate = listModePredicate(mode);
+
+  const unreadTargetPredicate =
+    mode === 'archive'
+      ? ''
+      : `AND NOT EXISTS (
+          SELECT 1
+          FROM nr_activity_targets activity_target
+          JOIN nr_events target ON target.id = activity_target.target_event_id
+          WHERE activity_target.activity_event_id = e.id
+            AND target.read_at IS NOT NULL
+        )`;
 
   const rows = db
     .prepare(
@@ -1260,18 +2063,31 @@ function listEventsForTag({
       FROM nr_events e
       JOIN nr_event_tags t ON t.event_id = e.id
       LEFT JOIN nr_classifications c ON c.event_id = e.id
-      WHERE t.type = ? AND t.tag = ? AND ${predicate}
+      WHERE t.type = ? AND t.tag = ? AND ${predicate} ${unreadTargetPredicate}
       ORDER BY e.event_created_at DESC
     `,
     )
     .all(type, tag) as EventRow[];
 
-  return rows
-    .map(rowToNrEvent)
-    .filter(
-      (event) =>
-        !hiddenEventIds.has(event.id) && eventHasCompleteContext(event),
-    );
+  return rows.map(rowToNrEvent).filter((event) => {
+    if (hiddenEventIds.has(event.id) || !eventHasCompleteContext(event)) {
+      return false;
+    }
+
+    if (mode === 'archive') {
+      return true;
+    }
+
+    try {
+      const category = categoryForNrEvent(
+        JSON.parse(event.raw_json) as NostrEvent,
+      );
+
+      return category !== null && categories.includes(category);
+    } catch {
+      return false;
+    }
+  });
 }
 
 type BuildGroupsProps = {
@@ -1279,6 +2095,7 @@ type BuildGroupsProps = {
   type: 'topic' | 'mood';
   hiddenEventIds: Set<string>;
   mode: NrListMode;
+  categories: NrFeedCategory[];
 };
 
 function buildGroups({
@@ -1286,6 +2103,7 @@ function buildGroups({
   type,
   hiddenEventIds,
   mode,
+  categories,
 }: BuildGroupsProps): NrTagGroup[] {
   return listTags({ db, type, mode })
     .map((row) => {
@@ -1295,6 +2113,7 @@ function buildGroups({
         tag: row.tag,
         hiddenEventIds,
         mode,
+        categories,
       });
 
       return {
@@ -1339,8 +2158,67 @@ type GetNrListDataProps = {
   mode: NrListMode;
 };
 
+function scoringTopics(topics: string[]): string[] {
+  return [
+    ...new Set(
+      topics
+        .map((topic) => topic.trim().toLowerCase())
+        .filter((topic) => topic && topic !== 'general'),
+    ),
+  ];
+}
+
+export function buildNrTopicAffinities(
+  signals: NrInterestSignal[],
+): Map<string, number> {
+  const affinities = new Map<string, number>();
+
+  for (const signal of signals) {
+    const topics = scoringTopics(signal.topics);
+
+    if (topics.length === 0) {
+      continue;
+    }
+
+    const contribution = signal.weight / topics.length;
+
+    for (const topic of topics) {
+      affinities.set(topic, (affinities.get(topic) ?? 0) + contribution);
+    }
+  }
+
+  return affinities;
+}
+
+export function scoreNrEventForYou(
+  event: NrEvent,
+  topicAffinities: ReadonlyMap<string, number>,
+): number {
+  const topics = scoringTopics(event.topics);
+
+  if (topics.length === 0) {
+    return 0;
+  }
+
+  const total = topics.reduce(
+    (score, topic) => score + (topicAffinities.get(topic) ?? 0),
+    0,
+  );
+
+  return total / topics.length;
+}
+
 export function getNrListData({ db, mode }: GetNrListDataProps): NrListData {
   const nowSeconds = Math.floor(Date.now() / 1000);
+
+  const selectedCategories =
+    mode === 'archive'
+      ? normalizeNrFeedCategories([])
+      : getNrListFilter({
+          db,
+          mode: mode === 'profile' ? 'profile' : 'timeline',
+        });
+
   const hiddenEventIds = relatedEventIdsForMode(db, mode);
 
   const topicGroups = buildGroups({
@@ -1348,6 +2226,7 @@ export function getNrListData({ db, mode }: GetNrListDataProps): NrListData {
     type: 'topic',
     hiddenEventIds,
     mode,
+    categories: selectedCategories,
   });
 
   const moodGroups = buildGroups({
@@ -1355,6 +2234,7 @@ export function getNrListData({ db, mode }: GetNrListDataProps): NrListData {
     type: 'mood',
     hiddenEventIds,
     mode,
+    categories: selectedCategories,
   });
 
   const visibleUnreadEventIds = new Set(
@@ -1363,8 +2243,57 @@ export function getNrListData({ db, mode }: GetNrListDataProps): NrListData {
     ),
   );
 
+  const interestSignals = listNrInterestSignals(db);
+  const topicAffinities = buildNrTopicAffinities(interestSignals);
+
+  const forYouEvents = [
+    ...new Map(
+      [...topicGroups, ...moodGroups]
+        .flatMap((group) => group.events)
+        .map((event) => [event.id, event]),
+    ).values(),
+  ].sort((left, right) => {
+    const scoreDifference =
+      scoreNrEventForYou(right, topicAffinities) -
+      scoreNrEventForYou(left, topicAffinities);
+
+    return scoreDifference || right.event_created_at - left.event_created_at;
+  });
+
+  const forYouScores = Object.fromEntries(
+    forYouEvents.map((event) => [
+      event.id,
+      scoreNrEventForYou(event, topicAffinities),
+    ]),
+  );
+
+  const activityEvents = db
+    .prepare(
+      `SELECT e.*, c.summary, c.model, c.classified_at, c.classification_json
+       FROM nr_events e
+       LEFT JOIN nr_classifications c ON c.event_id = e.id
+       WHERE e.kind != 1 AND ${listModePredicate(mode)}
+       ORDER BY e.event_created_at DESC`,
+    )
+    .all() as EventRow[];
+
   return {
     mode,
+    selectedCategories,
+    profileEvents: [],
+    forYouEvents,
+    forYouScores,
+    activityEvents: activityEvents.map(rowToNrEvent).filter((event) => {
+      try {
+        const category = categoryForNrEvent(
+          JSON.parse(event.raw_json) as NostrEvent,
+        );
+
+        return category !== null && selectedCategories.includes(category);
+      } catch {
+        return false;
+      }
+    }),
     topicGroups,
     moodGroups,
     unreadTotal: visibleUnreadEventIds.size,
@@ -1375,6 +2304,7 @@ export function getNrListData({ db, mode }: GetNrListDataProps): NrListData {
       scopes: ['follows'],
     }),
     interactions: listNrInteractions(db),
+    interestSignals,
     taxonomyTerms: listNrTaxonomyTerms(db),
     settings: getNrSettings(db),
   };

@@ -20,10 +20,13 @@ Private WIP Nostr radar plugin. It fetches or manually parses raw Nostr event JS
 - `commands/settings/*` — DB-backed AI backend/model/instructions settings using regular command form metadata and text output
 - `commands/shared/types.ts` — Nostr event/cache/classification/list schemas and legacy scaffold input schemas
 - `commands/shared/output.ts` — shared message representation + builder
-- `commands/list/renderers/{text,web}.ts` — unread topic/mood counts; web renderer uses `tree` / `treeItem` with fetch-from-follows controls and shared compact post-card helpers
+- `commands/list/renderers/{text,web}.ts` — grouped Timeline/Profile/Archive views plus the flat, locally scored For You feed
 - `commands/show/renderers/{text,web}.ts` — cached event detail renderers
 - `classifier.ts` — deterministic heuristic topic/mood classification used before any LLM integration
-- `db.ts` — SQLite open + event/classification/tag tables, parse upsert, unread grouping, and read state
+- `classifier-ai.ts` — AI classification prompt execution with thread, reference, and aggregated WoT reaction context
+- `references.ts` — parses NIP-21 event/profile/address references, fetches event targets, and exposes naddr metadata for external article links
+- `db.ts` — SQLite events, classifications, weighted interaction/local preference signals, topic-affinity For You scoring, and read/archive state
+- `scripts/seed-for-you.ts` — dry-run-first temporary Profile interaction importer for removable For You seed signals
 - `ai.ts` — tool schema + `executeTool` (used by `plugin:generate` and local CLI)
 
 Regenerate bottom-up docs for this folder after substantive edits (`bun src/cli.ts file bottomup …` per appweaver-file skill).

@@ -27,6 +27,10 @@ export function extractNip10References(event: NostrEvent): Nip10Reference[] {
     const marker =
       typeof tag[3] === 'string' && tag[3].trim() ? tag[3].trim() : null;
 
+    if (marker === 'mention') {
+      continue;
+    }
+
     const existing = references.get(id);
 
     references.set(id, {

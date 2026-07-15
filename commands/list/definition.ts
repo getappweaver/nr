@@ -6,18 +6,41 @@ export const listDefinition = (
 ): SubcommandDefinition => ({
   name: 'list',
   summary:
-    'List timeline or archived cached posts grouped by topic tags and mood tags.',
+    'List cached Nostr Radar items or recent activity from your write relays.',
   aliases: [],
   arguments: [],
   options: [
     {
       name: 'mode',
       flag: '--mode',
-      summary: 'List mode: timeline or archive.',
+      summary: 'List mode: timeline, for-you, profile, or archive.',
       kind: 'string',
       required: false,
-      choices: ['timeline', 'archive'],
+      choices: ['timeline', 'for-you', 'profile', 'archive'],
+    },
+    {
+      name: 'kinds',
+      flag: '--kinds',
+      summary: 'Visible event categories for Timeline or Profile.',
+      kind: 'string',
+      multiple: true,
+      choices: [
+        'posts',
+        'replies',
+        'comments',
+        'reposts',
+        'quotes',
+        'reactions',
+      ],
     },
   ],
   examples: [`${prefix}${alias} list`, `${prefix}${alias} list --mode archive`],
+  webWidget: {
+    placement: 'right',
+    surface: 'timeline_singleton',
+    label: 'Nostr Radar',
+    modalTitle: 'Nostr Radar',
+    icon: './commands/list/renderers/list.svg',
+    order: 10,
+  },
 });

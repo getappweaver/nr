@@ -3,6 +3,7 @@ import {
   markEventState,
   markTaggedEventsState,
   parseAndStoreEvent,
+  recordNrInterestSignal,
   type NrMarkState,
 } from '../../db';
 import type { NrCommandAdapterParams } from '../../types/adapter-params';
@@ -131,6 +132,18 @@ export async function adaptMarkCommand(
 
   if (!event) {
     return `Not found: ${eventId}`;
+  }
+
+  if (state === 'archived') {
+    recordNrInterestSignal({
+      db: params.db,
+      targetEventId: eventId,
+      type: 'archive',
+      createdAt: Date.now(),
+      topics: null,
+      moods: null,
+      source: 'archive',
+    });
   }
 
   return `Marked ${state}: ${event.id}`;

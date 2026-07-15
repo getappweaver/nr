@@ -4,6 +4,7 @@ import type { CommandDefinition } from '@src/system/command-definition';
 import { contextDefinition } from './commands/context/definition';
 import { fetchLatestDefinition } from './commands/fetch-latest/definition';
 import { interactionRecordDefinition } from './commands/interaction-record/definition';
+import { interestRecordDefinition } from './commands/interest-record/definition';
 import { listDefinition } from './commands/list/definition';
 import { listParseSingleDefinition } from './commands/list-parse-single/definition';
 import { markDefinition } from './commands/mark/definition';
@@ -34,6 +35,7 @@ export const commandDefinition = (
     taxonomyDefinition(),
     fetchLatestDefinition(prefix, alias),
     interactionRecordDefinition(),
+    interestRecordDefinition(),
     listParseSingleDefinition(prefix, alias),
     listDefinition(prefix, alias),
   ],
