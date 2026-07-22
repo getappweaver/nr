@@ -4,6 +4,10 @@ import type { WebNodeRoot } from '@src/web/ui-schema';
 import { classifyEventWithNrAi } from '../../classifier-ai';
 import { listNrInteractions, parseAndStoreEvent } from '../../db';
 import {
+  hydrateStoredNrEvents,
+  parseNostrEventArray,
+} from '../../nostr-resolution';
+import {
   extractProfileReferences,
   fetchReferencedEvents,
 } from '../../references';
@@ -11,11 +15,7 @@ import { getNrSettings } from '../../settings';
 import { fetchNip10ThreadContext } from '../../thread-context';
 import type { NrCommandAdapterParams } from '../../types/adapter-params';
 
-import {
-  NostrEventSchema,
-  type NostrEvent,
-  type NrEvent,
-} from '../shared/types';
+import { NostrEventSchema, type NrEvent } from '../shared/types';
 import { stringFromVariadicArgument } from '../shared/variadic-text';
 
 import { renderNrListParseSingleWeb } from './renderers/web';
@@ -28,23 +28,13 @@ function asString(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }
 
-function parseContextEvents(rawJson: string): NostrEvent[] {
-  try {
-    const parsed = JSON.parse(rawJson) as unknown;
-
-    return Array.isArray(parsed) ? (parsed as NostrEvent[]) : [];
-  } catch {
-    return [];
-  }
-}
-
 function collectProfilePubkeys(event: NrEvent | null): string[] {
   if (!event) {
     return [];
   }
 
-  const threadContext = parseContextEvents(event.thread_context_json);
-  const referencedEvents = parseContextEvents(event.referenced_events_json);
+  const threadContext = parseNostrEventArray(event.thread_context_json);
+  const referencedEvents = parseNostrEventArray(event.referenced_events_json);
 
   return [
     ...new Set([
@@ -188,6 +178,7 @@ export async function adaptListParseSingleCommand(
     relayHints,
     threadContext: threadContextResult.events,
     referencedEvents: referencedEventsResult.events,
+    nostrResolution: params.storedCtx.nostrResolution,
     classify: (event) =>
       classifyEventWithNrAi({
         db: params.db,
@@ -198,7 +189,14 @@ export async function adaptListParseSingleCommand(
         audienceReactions: [],
         storedCtx: params.storedCtx,
         runAgent: params.runAgent,
+        abortSignal: null,
       }),
+  });
+
+  await hydrateStoredNrEvents({
+    service: params.storedCtx.nostrResolution,
+    events: [result.event],
+    contextRelays: parseRelayUrls(process.env.BOT_RELAYS ?? ''),
   });
 
   if (params.source !== 'web') {
@@ -217,9 +215,10 @@ export async function adaptListParseSingleCommand(
   return renderNrListParseSingleWeb({
     alias: params.alias,
     settings,
-    profiles: await params.storedCtx.wot.getProfiles(
-      collectProfilePubkeys(result.event),
-    ),
+    profiles: await params.storedCtx.wot.getProfiles({
+      pubkeys: collectProfilePubkeys(result.event),
+      waitForMissing: false,
+    }),
     event: result.event,
     interactions: listNrInteractions(params.db),
     message: result.inserted ? 'Cached new event.' : 'Updated cached event.',

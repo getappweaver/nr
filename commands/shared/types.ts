@@ -117,6 +117,15 @@ export type NrInterestSignal = {
   updatedAt: number;
 };
 
+export type NrAuthorPreferenceValue = 'like' | 'dislike';
+
+export type NrAuthorPreference = {
+  pubkey: string;
+  preference: NrAuthorPreferenceValue;
+  createdAt: number;
+  updatedAt: number;
+};
+
 export type NrTaxonomyTermType = 'topic' | 'mood';
 
 export type NrTaxonomyTerm = {
@@ -142,6 +151,7 @@ export type NrListData = {
   fetchWindows: NrFetchWindow[];
   interactions: NrInteraction[];
   interestSignals: NrInterestSignal[];
+  authorPreferences: NrAuthorPreference[];
   taxonomyTerms: NrTaxonomyTerm[];
   settings: NrSettings;
 };

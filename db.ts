@@ -6,6 +6,8 @@ import { join } from 'path';
 
 import { Database, type Database as DatabaseType } from 'bun:sqlite';
 
+import type { NostrResolutionService } from '@src/nostr/resolution-service';
+
 import { classifyEvent } from './classifier';
 import {
   categoryForNrEvent,
@@ -23,6 +25,8 @@ import type {
   NrInteraction,
   NrInteractionType,
   NrAudienceReaction,
+  NrAuthorPreference,
+  NrAuthorPreferenceValue,
   NrInterestSignal,
   NrInterestSignalType,
   NrListMode,
@@ -33,6 +37,7 @@ import type {
   NrProfileEvent,
   ParsedNrEventResult,
 } from './commands/shared/types';
+import { seedNostrEventsOrThrow } from './nostr-resolution';
 import { extractEventReferences } from './references';
 import { createNrSettingsTable, getNrSettings } from './settings';
 import { extractNip10References } from './thread-context';
@@ -99,6 +104,42 @@ type SkippedEventRow = {
   skipped_at: number;
 };
 
+type EvaluationQueueRow = {
+  event_id: string;
+  raw_event_json: string;
+  relay_hints_json: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  attempts: number;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
+  processing_started_at: number | null;
+};
+
+export type NrEvaluationQueueItem = {
+  eventId: string;
+  event: NostrEvent;
+  relayHints: string[];
+  attempts: number;
+};
+
+export type EnqueueNrEvaluationProps = {
+  db: DatabaseType;
+  event: NostrEvent;
+  relayHints: string[];
+};
+
+export type RecoverNrEvaluationQueueProps = {
+  db: DatabaseType;
+  staleBeforeMs: number;
+};
+
+export type FinishNrEvaluationProps = {
+  db: DatabaseType;
+  eventId: string;
+  error: string | null;
+};
+
 type InteractionRow = {
   interaction_event_id: string;
   target_event_id: string;
@@ -116,6 +157,13 @@ type InterestSignalRow = {
   topics_json: string;
   moods_json: string;
   source: string;
+  created_at: number;
+  updated_at: number;
+};
+
+type AuthorPreferenceRow = {
+  pubkey: string;
+  preference: string;
   created_at: number;
   updated_at: number;
 };
@@ -344,6 +392,15 @@ function rowToNrInterestSignal(row: InterestSignalRow): NrInterestSignal {
   };
 }
 
+function rowToNrAuthorPreference(row: AuthorPreferenceRow): NrAuthorPreference {
+  return {
+    pubkey: row.pubkey,
+    preference: row.preference as NrAuthorPreferenceValue,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 function normalizeTaxonomyTag(tag: string): string {
   return tag.trim().toLowerCase();
 }
@@ -484,6 +541,25 @@ export function createNrTable(db: DatabaseType): void {
   `);
 
   db.run(`
+    CREATE TABLE IF NOT EXISTS nr_evaluation_queue (
+      event_id              TEXT PRIMARY KEY,
+      raw_event_json        TEXT NOT NULL,
+      relay_hints_json      TEXT NOT NULL,
+      status                TEXT NOT NULL CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
+      attempts              INTEGER NOT NULL DEFAULT 0,
+      error                 TEXT,
+      created_at            INTEGER NOT NULL,
+      updated_at            INTEGER NOT NULL,
+      processing_started_at INTEGER
+    )
+  `);
+
+  db.run(`
+    CREATE INDEX IF NOT EXISTS idx_nr_evaluation_queue_pending
+    ON nr_evaluation_queue(status, created_at)
+  `);
+
+  db.run(`
     CREATE INDEX IF NOT EXISTS idx_nr_skipped_events_created_at
     ON nr_skipped_events(event_created_at)
   `);
@@ -579,6 +655,20 @@ export function createNrTable(db: DatabaseType): void {
   db.run(`
     CREATE INDEX IF NOT EXISTS idx_nr_interest_signals_updated
     ON nr_interest_signals(updated_at DESC)
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS nr_author_preferences (
+      pubkey     TEXT PRIMARY KEY,
+      preference TEXT    NOT NULL CHECK (preference IN ('like', 'dislike')),
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `);
+
+  db.run(`
+    CREATE INDEX IF NOT EXISTS idx_nr_author_preferences_updated
+    ON nr_author_preferences(updated_at DESC)
   `);
 
   backfillNrInterestSignals(db);
@@ -703,6 +793,187 @@ export function hasNrSkippedEvent(db: DatabaseType, id: string): boolean {
     .get(id) as { found: number } | undefined;
 
   return row != null;
+}
+
+function rowToNrEvaluationQueueItem(
+  row: EvaluationQueueRow,
+): NrEvaluationQueueItem | null {
+  try {
+    const event = JSON.parse(row.raw_event_json) as NostrEvent;
+
+    return {
+      eventId: row.event_id,
+      event,
+      relayHints: safeParseStringArray(row.relay_hints_json),
+      attempts: row.attempts,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function enqueueNrEvaluation({
+  db,
+  event,
+  relayHints,
+}: EnqueueNrEvaluationProps): boolean {
+  return db.transaction(() => {
+    const existing = db
+      .prepare(
+        'SELECT relay_hints_json, status FROM nr_evaluation_queue WHERE event_id = ?',
+      )
+      .get(event.id) as
+      | { relay_hints_json: string; status: EvaluationQueueRow['status'] }
+      | undefined;
+
+    const now = Date.now();
+
+    const hints = [
+      ...new Set([
+        ...(existing ? safeParseStringArray(existing.relay_hints_json) : []),
+        ...relayHints,
+      ]),
+    ];
+
+    if (!existing) {
+      db.run(
+        `INSERT INTO nr_evaluation_queue (
+          event_id, raw_event_json, relay_hints_json, status, attempts, error, created_at, updated_at, processing_started_at
+        ) VALUES (?, ?, ?, 'pending', 0, NULL, ?, ?, NULL)`,
+        [event.id, JSON.stringify(event), JSON.stringify(hints), now, now],
+      );
+
+      db.run(
+        `DELETE FROM nr_evaluation_queue
+         WHERE event_id IN (
+           SELECT event_id
+           FROM nr_evaluation_queue
+           WHERE status = 'completed'
+           ORDER BY updated_at DESC
+           LIMIT -1 OFFSET ?
+         )`,
+        [NR_EVALUATION_QUEUE_COMPLETED_LIMIT],
+      );
+
+      return true;
+    }
+
+    db.run(
+      `UPDATE nr_evaluation_queue
+       SET raw_event_json = ?,
+           relay_hints_json = ?,
+           status = CASE WHEN status = 'failed' THEN 'pending' ELSE status END,
+           error = CASE WHEN status = 'failed' THEN NULL ELSE error END,
+           processing_started_at = CASE WHEN status = 'failed' THEN NULL ELSE processing_started_at END,
+           updated_at = ?
+       WHERE event_id = ?`,
+      [JSON.stringify(event), JSON.stringify(hints), now, event.id],
+    );
+
+    db.run(
+      `DELETE FROM nr_evaluation_queue
+       WHERE event_id IN (
+         SELECT event_id
+         FROM nr_evaluation_queue
+         WHERE status = 'completed'
+         ORDER BY updated_at DESC
+         LIMIT -1 OFFSET ?
+       )`,
+      [NR_EVALUATION_QUEUE_COMPLETED_LIMIT],
+    );
+
+    return false;
+  })();
+}
+
+export function recoverNrEvaluationQueue({
+  db,
+  staleBeforeMs,
+}: RecoverNrEvaluationQueueProps): number {
+  const result = db.run(
+    `UPDATE nr_evaluation_queue
+     SET status = 'pending',
+         error = 'Recovered stale processing claim.',
+         processing_started_at = NULL,
+         updated_at = ?
+     WHERE status = 'processing' AND processing_started_at < ?`,
+    [Date.now(), staleBeforeMs],
+  );
+
+  return result.changes;
+}
+
+export function claimNrEvaluation(
+  db: DatabaseType,
+): NrEvaluationQueueItem | null {
+  return db.transaction(() => {
+    const row = db
+      .prepare(
+        `SELECT * FROM nr_evaluation_queue
+         WHERE status = 'pending'
+         ORDER BY created_at ASC
+         LIMIT 1`,
+      )
+      .get() as EvaluationQueueRow | undefined;
+
+    if (!row) {
+      return null;
+    }
+
+    const now = Date.now();
+
+    db.run(
+      `UPDATE nr_evaluation_queue
+       SET status = 'processing', attempts = attempts + 1, processing_started_at = ?, updated_at = ?
+       WHERE event_id = ? AND status = 'pending'`,
+      [now, now, row.event_id],
+    );
+
+    const claimed = db
+      .prepare('SELECT * FROM nr_evaluation_queue WHERE event_id = ?')
+      .get(row.event_id) as EvaluationQueueRow | undefined;
+
+    const item = claimed ? rowToNrEvaluationQueueItem(claimed) : null;
+
+    if (item) {
+      return item;
+    }
+
+    db.run(
+      `UPDATE nr_evaluation_queue
+       SET status = 'failed', error = 'Stored queue event is invalid JSON.', processing_started_at = NULL, updated_at = ?
+       WHERE event_id = ?`,
+      [Date.now(), row.event_id],
+    );
+
+    return null;
+  })();
+}
+
+export function completeNrEvaluation({
+  db,
+  eventId,
+  error,
+}: FinishNrEvaluationProps): void {
+  db.run(
+    `UPDATE nr_evaluation_queue
+     SET status = 'completed', error = ?, processing_started_at = NULL, updated_at = ?
+     WHERE event_id = ? AND status = 'processing'`,
+    [error, Date.now(), eventId],
+  );
+}
+
+export function failNrEvaluation({
+  db,
+  eventId,
+  error,
+}: FinishNrEvaluationProps): void {
+  db.run(
+    `UPDATE nr_evaluation_queue
+     SET status = 'failed', error = ?, processing_started_at = NULL, updated_at = ?
+     WHERE event_id = ? AND status = 'processing'`,
+    [error, Date.now(), eventId],
+  );
 }
 
 export function recordNrSkippedEvent({
@@ -859,6 +1130,8 @@ const NR_INTEREST_WEIGHTS: Record<NrInterestSignalType, number> = {
   local_dislike: -5,
 };
 
+const NR_EVALUATION_QUEUE_COMPLETED_LIMIT = 10_000;
+
 function interestTags({
   db,
   targetEventId,
@@ -1001,6 +1274,61 @@ export function setNrLocalPreference({
       source: 'private',
     });
   })();
+}
+
+export function setNrAuthorPreference({
+  db,
+  pubkey,
+  preference,
+}: {
+  db: DatabaseType;
+  pubkey: string;
+  preference: NrAuthorPreferenceValue | 'none';
+}): NrAuthorPreference | null {
+  const normalizedPubkey = pubkey.trim().toLowerCase();
+
+  if (!normalizedPubkey) {
+    return null;
+  }
+
+  return db.transaction(() => {
+    const now = Date.now();
+
+    if (preference === 'none') {
+      db.run('DELETE FROM nr_author_preferences WHERE pubkey = ?', [
+        normalizedPubkey,
+      ]);
+
+      return null;
+    }
+
+    db.run(
+      `INSERT INTO nr_author_preferences (pubkey, preference, created_at, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(pubkey) DO UPDATE SET
+         preference = excluded.preference,
+         updated_at = excluded.updated_at`,
+      [normalizedPubkey, preference, now, now],
+    );
+
+    const row = db
+      .prepare('SELECT * FROM nr_author_preferences WHERE pubkey = ?')
+      .get(normalizedPubkey) as AuthorPreferenceRow | null;
+
+    return row ? rowToNrAuthorPreference(row) : null;
+  })();
+}
+
+export function listNrAuthorPreferences(
+  db: DatabaseType,
+): NrAuthorPreference[] {
+  return (
+    db
+      .prepare(
+        'SELECT * FROM nr_author_preferences ORDER BY updated_at DESC, pubkey ASC',
+      )
+      .all() as AuthorPreferenceRow[]
+  ).map(rowToNrAuthorPreference);
 }
 
 function backfillNrInterestSignals(db: DatabaseType): void {
@@ -1529,6 +1857,7 @@ type ParseAndStoreEventProps = {
   relayHints: string[];
   threadContext: NostrEvent[];
   referencedEvents: NostrEvent[];
+  nostrResolution: NostrResolutionService | null;
   classify: (
     event: NostrEvent,
   ) => Promise<EventClassification> | EventClassification;
@@ -1541,8 +1870,23 @@ export async function parseAndStoreEvent({
   relayHints,
   threadContext,
   referencedEvents,
+  nostrResolution,
   classify,
 }: ParseAndStoreEventProps): Promise<ParsedNrEventResult> {
+  if (nostrResolution) {
+    await seedNostrEventsOrThrow({
+      service: nostrResolution,
+      events: [
+        { event, relayHints },
+        ...threadContext.map((item) => ({ event: item, relayHints: [] })),
+        ...referencedEvents.map((item) => ({
+          event: item,
+          relayHints: [],
+        })),
+      ],
+    });
+  }
+
   const now = Date.now();
   const existing = getEventRow(db, event.id);
 
@@ -1580,8 +1924,8 @@ export async function parseAndStoreEvent({
       JSON.stringify(event),
       now,
       JSON.stringify([...new Set(relayHints)]),
-      JSON.stringify(threadContext),
-      JSON.stringify(referencedEvents),
+      JSON.stringify(threadContext.map(({ id }) => ({ id }))),
+      JSON.stringify(referencedEvents.map(({ id }) => ({ id }))),
     ],
   );
 
@@ -1840,6 +2184,7 @@ export async function reevaluateEvent(
       referencedEvents: JSON.parse(
         existing.referenced_events_json,
       ) as NostrEvent[],
+      nostrResolution: null,
       classify: classifyEvent,
     })
   ).event;
@@ -2190,14 +2535,42 @@ export function buildNrTopicAffinities(
   return affinities;
 }
 
-export function scoreNrEventForYou(
-  event: NrEvent,
-  topicAffinities: ReadonlyMap<string, number>,
-): number {
+const NR_AUTHOR_PREFERENCE_WEIGHTS: Record<NrAuthorPreferenceValue, number> = {
+  like: 2,
+  dislike: -6,
+};
+
+export function buildNrAuthorAffinities(
+  preferences: NrAuthorPreference[],
+): Map<string, number> {
+  const affinities = new Map<string, number>();
+
+  for (const preference of preferences) {
+    affinities.set(
+      preference.pubkey.toLowerCase(),
+      NR_AUTHOR_PREFERENCE_WEIGHTS[preference.preference],
+    );
+  }
+
+  return affinities;
+}
+
+type ScoreNrEventForYouProps = {
+  event: NrEvent;
+  topicAffinities: ReadonlyMap<string, number>;
+  authorAffinities: ReadonlyMap<string, number>;
+};
+
+export function scoreNrEventForYou({
+  event,
+  topicAffinities,
+  authorAffinities,
+}: ScoreNrEventForYouProps): number {
   const topics = scoringTopics(event.topics);
+  const authorScore = authorAffinities.get(event.pubkey.toLowerCase()) ?? 0;
 
   if (topics.length === 0) {
-    return 0;
+    return authorScore;
   }
 
   const total = topics.reduce(
@@ -2205,7 +2578,7 @@ export function scoreNrEventForYou(
     0,
   );
 
-  return total / topics.length;
+  return total / topics.length + authorScore;
 }
 
 export function getNrListData({ db, mode }: GetNrListDataProps): NrListData {
@@ -2244,7 +2617,9 @@ export function getNrListData({ db, mode }: GetNrListDataProps): NrListData {
   );
 
   const interestSignals = listNrInterestSignals(db);
+  const authorPreferences = listNrAuthorPreferences(db);
   const topicAffinities = buildNrTopicAffinities(interestSignals);
+  const authorAffinities = buildNrAuthorAffinities(authorPreferences);
 
   const forYouEvents = [
     ...new Map(
@@ -2254,8 +2629,16 @@ export function getNrListData({ db, mode }: GetNrListDataProps): NrListData {
     ).values(),
   ].sort((left, right) => {
     const scoreDifference =
-      scoreNrEventForYou(right, topicAffinities) -
-      scoreNrEventForYou(left, topicAffinities);
+      scoreNrEventForYou({
+        event: right,
+        topicAffinities,
+        authorAffinities,
+      }) -
+      scoreNrEventForYou({
+        event: left,
+        topicAffinities,
+        authorAffinities,
+      });
 
     return scoreDifference || right.event_created_at - left.event_created_at;
   });
@@ -2263,7 +2646,7 @@ export function getNrListData({ db, mode }: GetNrListDataProps): NrListData {
   const forYouScores = Object.fromEntries(
     forYouEvents.map((event) => [
       event.id,
-      scoreNrEventForYou(event, topicAffinities),
+      scoreNrEventForYou({ event, topicAffinities, authorAffinities }),
     ]),
   );
 
@@ -2305,6 +2688,7 @@ export function getNrListData({ db, mode }: GetNrListDataProps): NrListData {
     }),
     interactions: listNrInteractions(db),
     interestSignals,
+    authorPreferences,
     taxonomyTerms: listNrTaxonomyTerms(db),
     settings: getNrSettings(db),
   };

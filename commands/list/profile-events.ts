@@ -1,17 +1,12 @@
-import {
-  fetchNip65WriteRelays,
-  PROFILE_RELAYS_FOR_QUERY,
-  uniqueRelays,
-} from '@src/nostr/nip65';
+import { PROFILE_RELAYS_FOR_QUERY } from '@src/nostr/nip65';
 
-import { fetchReferencedEvents } from '../../references';
+import {
+  reachableGraphEvents,
+  seedStoredProfileEvents,
+} from '../../nostr-resolution';
 import type { NrCommandAdapterParams } from '../../types/adapter-params';
 
-import {
-  NostrEventSchema,
-  type NostrEvent,
-  type NrProfileEvent,
-} from '../shared/types';
+import type { NrProfileEvent } from '../shared/types';
 
 import {
   categoryForNrEvent,
@@ -19,8 +14,8 @@ import {
   type NrFeedCategory,
 } from './categories';
 
-const PAGE_LIMIT = 20;
 const MAX_EVENTS = 50;
+const PROFILE_RESOLUTION_TIMEOUT_MS = 10_000;
 
 export async function fetchNrProfileEvents({
   params,
@@ -31,62 +26,33 @@ export async function fetchNrProfileEvents({
   categories: NrFeedCategory[];
   cachedEvents: NrProfileEvent[];
 }): Promise<NrProfileEvent[]> {
-  const relays = await fetchNip65WriteRelays({
-    pool: params.storedCtx.pool,
-    authorPubkey: params.storedCtx.masterPubkey,
-  });
+  const service = params.storedCtx.nostrResolution;
+  const deadlineAtMs = Date.now() + PROFILE_RESOLUTION_TIMEOUT_MS;
+  const fallbackRelays = [...PROFILE_RELAYS_FOR_QUERY];
 
-  const kinds = kindsForNrFeedCategories(categories);
-  const events = new Map(cachedEvents.map(({ event }) => [event.id, event]));
+  await seedStoredProfileEvents({ service, events: cachedEvents });
 
-  const latestCachedCreatedAt = Math.max(
-    0,
-    ...cachedEvents.map(({ event }) => event.created_at),
+  const fetchedByKind = await Promise.all(
+    kindsForNrFeedCategories(categories).map((kind) =>
+      service.queryAuthorEvents({
+        pubkey: params.storedCtx.masterPubkey,
+        kind,
+        relayHints: [],
+        contextRelays: fallbackRelays,
+        fallbackRelays,
+        limit: MAX_EVENTS,
+        refreshMode: 'require-fresh',
+        refreshIntervalMs: 15 * 60 * 1_000,
+        deadlineAtMs,
+      }),
+    ),
   );
 
-  let until = Math.floor(Date.now() / 1000);
-  let queried = false;
-
-  while (!queried || events.size < MAX_EVENTS) {
-    const page = await params.storedCtx.pool.querySync(
-      relays,
-      {
-        authors: [params.storedCtx.masterPubkey],
-        kinds,
-        ...(latestCachedCreatedAt > 0
-          ? { since: latestCachedCreatedAt + 1 }
-          : {}),
-        until,
-        limit: PAGE_LIMIT,
-      },
-      { maxWait: 10_000 },
-    );
-
-    const valid = page
-      .map((event) => NostrEventSchema.safeParse(event))
-      .filter((result) => result.success)
-      .map((result) => result.data)
-      .sort((a, b) => b.created_at - a.created_at);
-
-    queried = true;
-
-    for (const event of valid) {
-      if (
-        categoryForNrEvent(event) &&
-        categories.includes(categoryForNrEvent(event)!)
-      ) {
-        events.set(event.id, event);
-      }
-    }
-
-    const oldest = valid.at(-1);
-
-    if (valid.length < PAGE_LIMIT || !oldest) {
-      break;
-    }
-
-    until = oldest.created_at - 1;
-  }
+  const events = new Map(
+    [...cachedEvents.map(({ event }) => event), ...fetchedByKind.flat()].map(
+      (event) => [event.id, event],
+    ),
+  );
 
   const selected = [...events.values()]
     .filter((event) => {
@@ -94,108 +60,34 @@ export async function fetchNrProfileEvents({
 
       return category !== null && categories.includes(category);
     })
-    .sort((a, b) => b.created_at - a.created_at)
+    .sort(
+      (left, right) =>
+        right.created_at - left.created_at || right.id.localeCompare(left.id),
+    )
     .slice(0, MAX_EVENTS);
 
-  const referenceIds = [
-    ...new Set(
-      selected.flatMap((event) =>
-        event.tags
-          .filter((tag) => (tag[0] === 'e' || tag[0] === 'q') && tag[1]?.trim())
-          .map((tag) => tag[1]!.trim()),
-      ),
-    ),
-  ];
-
-  const referenced = referenceIds.length
-    ? await params.storedCtx.pool.querySync(
-        uniqueRelays([...relays, ...PROFILE_RELAYS_FOR_QUERY]),
-        { ids: referenceIds, limit: referenceIds.length },
-        { maxWait: 10_000 },
-      )
-    : [];
-
-  const referencesById = new Map<string, NostrEvent>(
-    referenced
-      .map((event) => NostrEventSchema.safeParse(event))
-      .filter((result) => result.success)
-      .map((result) => [result.data.id, result.data] as const),
-  );
-
-  const contentReferences = await Promise.all(
-    selected.map((event) =>
-      fetchReferencedEvents({
-        pool: params.storedCtx.pool,
-        content: event.content,
-        fallbackRelays: relays,
-      }),
-    ),
-  );
-
-  for (const result of contentReferences) {
-    for (const event of result.events) {
-      referencesById.set(event.id, event);
-    }
-  }
-
-  const directReferencesByEvent = new Map(
-    selected.map((event, index) => {
-      const ids = new Set([
-        ...event.tags
-          .filter((tag) => (tag[0] === 'e' || tag[0] === 'q') && tag[1]?.trim())
-          .map((tag) => tag[1]!.trim()),
-        ...contentReferences[index]!.references.map(
-          (reference) => reference.id,
-        ),
-      ]);
-
-      return [
-        event.id,
-        [...ids]
-          .map((id) => referencesById.get(id))
-          .filter(
-            (reference): reference is NostrEvent => reference !== undefined,
-          ),
-      ] as const;
-    }),
-  );
-
-  const nestedSources = [
-    ...new Map(
-      [...directReferencesByEvent.values()]
-        .flat()
-        .map((event) => [event.id, event]),
-    ).values(),
-  ];
-
-  const nestedResults = await Promise.all(
-    nestedSources.map((event) =>
-      fetchReferencedEvents({
-        pool: params.storedCtx.pool,
-        content: event.content,
-        fallbackRelays: relays,
-      }),
-    ),
-  );
-
-  const nestedReferencesBySource = new Map(
-    nestedSources.map((event, index) => [
-      event.id,
-      nestedResults[index]!.events,
-    ]),
-  );
+  const graph = await service.resolveGraph({
+    rootEvents: selected,
+    contextRelays: fallbackRelays,
+    fallbackRelays,
+    policy: {
+      includeThread: true,
+      includeEmbeds: true,
+      includeInteractions: true,
+      includeReplies: false,
+      maxDepth: 2,
+      maxEvents: 100,
+      maxReferencesPerEvent: 12,
+      timeoutMs: PROFILE_RESOLUTION_TIMEOUT_MS,
+    },
+    deadlineAtMs,
+  });
 
   return selected.map((event) => ({
     event,
-    referencedEvents: [
-      ...new Map(
-        (directReferencesByEvent.get(event.id) ?? [])
-          .flatMap((reference) => [
-            reference,
-            ...(nestedReferencesBySource.get(reference.id) ?? []),
-          ])
-          .map((reference) => [reference.id, reference]),
-      ).values(),
-    ],
+    referencedEvents: reachableGraphEvents({
+      graph,
+      rootEventId: event.id,
+    }),
   }));
 }

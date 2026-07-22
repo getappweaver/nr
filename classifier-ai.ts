@@ -32,6 +32,7 @@ type ClassifyEventWithNrAiProps = {
   audienceReactions: NrAudienceReaction[];
   storedCtx: PluginContext;
   runAgent: RunAgentFn | null;
+  abortSignal: AbortSignal | null;
 };
 
 function reactionCounts({
@@ -76,6 +77,7 @@ export async function classifyEventWithNrAi({
   audienceReactions,
   storedCtx,
   runAgent,
+  abortSignal,
 }: ClassifyEventWithNrAiProps): Promise<EventClassification> {
   void runAgent;
 
@@ -136,7 +138,7 @@ export async function classifyEventWithNrAi({
     getRoutstrSkKey: storedCtx.getRoutstrSkKey,
     modelOverride,
     onAgentStreamChunk: null,
-    streamAbortSignal: null,
+    streamAbortSignal: abortSignal,
     skipRuntimeContext: true,
   });
 

@@ -303,7 +303,7 @@ export function fetchCoverageBar(alias: string, listData: NrListData): WebNode {
   const buckets = fetchBuckets(listData.fetchWindows);
   const labels = fetchBoundaryLabels();
 
-  return el('stack', { id: 'nr-fetch-coverage', gap: 'xs' }, [
+  const node = el('stack', { id: 'nr-fetch-coverage', gap: 'xs' }, [
     el('row', { gap: 'xs', itemAlign: 'baseline', align: 'between' }, [
       el('text', { weight: 'semibold', size: 'sm' }, [text('Timeline bar')]),
       el('text', { tone: 'muted', size: 'sm' }, [
@@ -338,18 +338,29 @@ export function fetchCoverageBar(alias: string, listData: NrListData): WebNode {
         ),
       ),
     ]),
-    el('treeItem', { id: 'nr-fetch-coverage-legend', defaultExpanded: false }, [
-      el('text', { size: 'sm' }, [text('Legend')]),
-      el('text', { size: 'sm', whiteSpace: 'pre-wrap' }, [
-        text(
-          [
-            'gray: not fetched yet',
-            'green: fetched successfully',
-            'yellow: partial fetch; some relay groups failed',
-            'red: all relay groups failed',
-          ].join('\n'),
-        ),
-      ]),
-    ]),
+    {
+      ...(el(
+        'treeItem',
+        { id: 'nr-fetch-coverage-legend', defaultExpanded: false },
+        [
+          el('text', { size: 'sm' }, [text('Legend')]),
+          el('text', { size: 'sm', whiteSpace: 'pre-wrap' }, [
+            text(
+              [
+                'gray: not fetched yet',
+                'green: fetched successfully',
+                'yellow: partial fetch; some relay groups failed',
+                'red: all relay groups failed',
+              ].join('\n'),
+            ),
+          ]),
+        ],
+      ) as Extract<WebNode, { type: 'element' }>),
+      renderKey: 'nr:timeline:fetch-coverage:legend',
+    },
   ]);
+
+  return node.type === 'element'
+    ? { ...node, renderKey: 'nr:timeline:fetch-coverage' }
+    : node;
 }

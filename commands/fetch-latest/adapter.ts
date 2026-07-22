@@ -9,21 +9,25 @@ import {
   getNr,
   hasNrSkippedEvent,
   listNrFetchRelayCursors,
+  claimNrEvaluation,
+  completeNrEvaluation,
+  enqueueNrEvaluation,
+  failNrEvaluation,
   parseAndStoreEvent,
   recordNrFetchWindow,
   recordNrSkippedEvent,
+  recoverNrEvaluationQueue,
   saveNrFetchRelayCursor,
 } from '../../db';
 import {
-  extractEventReferences,
-  fetchTagReferencedEvents,
-  fetchReferencedEvents,
-} from '../../references';
+  directGraphEvents,
+  hasDirectMissingReference,
+  parseNostrEventArray,
+  reachableGraphEvents,
+} from '../../nostr-resolution';
+import { extractEventReferences } from '../../references';
 import { getNrSettings } from '../../settings';
-import {
-  extractNip10References,
-  fetchNip10ThreadContext,
-} from '../../thread-context';
+import { extractNip10References } from '../../thread-context';
 import type { NrCommandAdapterParams } from '../../types/adapter-params';
 
 import { NR_FETCH_STATUS_TARGET_ID } from '../fetch-status';
@@ -47,8 +51,8 @@ function reactionTargetId(event: NostrEvent): string | null {
 
 function needsNestedReferences(event: NrEvent): boolean {
   try {
-    const referenced = JSON.parse(event.referenced_events_json) as NostrEvent[];
-    const threadContext = JSON.parse(event.thread_context_json) as NostrEvent[];
+    const referenced = parseNostrEventArray(event.referenced_events_json);
+    const threadContext = parseNostrEventArray(event.thread_context_json);
 
     const referencedById = new Map(
       referenced.map((reference) => [reference.id, reference]),
@@ -79,6 +83,7 @@ type WithTimeoutProps<T> = {
   operation: Promise<T>;
   label: string;
   timeoutMs: number;
+  abortController: AbortController | null;
 };
 
 type RelayAuthorGroup = {
@@ -94,11 +99,11 @@ type FetchRelayGroupPagesProps = {
   limit: number;
   cursor: NrFetchRelayCursor | null;
   authorsHash: string;
+  onPageEvents: (relay: string, events: NostrEvent[]) => void;
 };
 
 type FetchRelayGroupPagesResult = {
   relay: string;
-  events: NostrEvent[];
   completed: boolean;
   failed: boolean;
   error: string | null;
@@ -111,7 +116,7 @@ type MapWithConcurrencyProps<T, R> = {
   map: (item: T) => Promise<R>;
 };
 
-const RELAY_FETCH_CONCURRENCY = 3;
+const CLASSIFICATION_TIMEOUT_MS = 120_000;
 
 async function sendFetchStatus({
   params,
@@ -138,6 +143,7 @@ async function withTimeout<T>({
   operation,
   label,
   timeoutMs,
+  abortController,
 }: WithTimeoutProps<T>): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
@@ -146,6 +152,7 @@ async function withTimeout<T>({
       operation,
       new Promise<T>((_, reject) => {
         timeoutId = setTimeout(() => {
+          abortController?.abort();
           reject(new Error(`${label} timed out after ${timeoutMs}ms`));
         }, timeoutMs);
       }),
@@ -206,11 +213,11 @@ async function fetchRelayGroupPages({
   limit,
   cursor,
   authorsHash,
+  onPageEvents,
 }: FetchRelayGroupPagesProps): Promise<FetchRelayGroupPagesResult> {
   if (cursor?.completed) {
     return {
       relay: group.relay,
-      events: [],
       completed: true,
       failed: false,
       error: null,
@@ -221,7 +228,6 @@ async function fetchRelayGroupPages({
   const authors = normalizedAuthors(group.authors);
   let nextUntil = cursor?.nextUntil ?? until;
   let fetchedEventCount = cursor?.fetchedEventCount ?? 0;
-  const events: NostrEvent[] = [];
   let pageCount = 0;
 
   while (nextUntil >= since) {
@@ -247,6 +253,7 @@ async function fetchRelayGroupPages({
         ),
         label: `nr fetch-latest relay query ${group.relay}`,
         timeoutMs: 15_000,
+        abortController: null,
       });
 
       const pageEvents = page.sort((a, b) => b.created_at - a.created_at);
@@ -262,7 +269,7 @@ async function fetchRelayGroupPages({
           ? since
           : oldestCreatedAt - 1;
 
-      events.push(...pageEvents);
+      onPageEvents(group.relay, pageEvents);
       fetchedEventCount += pageEvents.length;
       nextUntil = completed ? since : nextCursorUntil;
 
@@ -287,7 +294,6 @@ async function fetchRelayGroupPages({
       if (completed) {
         return {
           relay: group.relay,
-          events,
           completed: true,
           failed: false,
           error: null,
@@ -315,7 +321,6 @@ async function fetchRelayGroupPages({
 
       return {
         relay: group.relay,
-        events,
         completed: false,
         failed: true,
         error: message,
@@ -326,7 +331,6 @@ async function fetchRelayGroupPages({
 
   return {
     relay: group.relay,
-    events,
     completed: true,
     failed: false,
     error: null,
@@ -431,10 +435,38 @@ export async function adaptFetchLatestCommand(
   );
 
   const groups = relayAuthorGroups as RelayAuthorGroup[];
+  const eventRelayHints = new Map<string, string[]>();
+  const audienceReactionsByTarget = new Map<string, NrAudienceReaction[]>();
+  const relatedEventIds = new Set<string>();
+  const fetchedEventIds = new Set<string>();
+  let rawEventCount = 0;
+  let skippedCached = 0;
+  let skippedPreviously = 0;
+  let skippedByClassifier = 0;
+  let invalid = 0;
+  let stored = 0;
+  let skippedRelated = 0;
+  let deferredIncomplete = 0;
+  let failedEvents = 0;
+  let evaluatedByAi = 0;
+  let evaluatedByFallback = 0;
+  let evaluatedProgress = 0;
+  const eventErrors: string[] = [];
+  const storedIds: string[] = [];
+  let fetching = true;
+
+  recoverNrEvaluationQueue({
+    db: params.db,
+    staleBeforeMs: Date.now() - CLASSIFICATION_TIMEOUT_MS,
+  });
+
+  const workers = Array.from({ length: settings.aiEvaluationConcurrency }, () =>
+    consumeEvaluationQueue(),
+  );
 
   const groupResults = await mapWithConcurrency({
     items: groups,
-    concurrency: RELAY_FETCH_CONCURRENCY,
+    concurrency: settings.relayFetchConcurrency,
     map: async (group) => {
       const authorsHash = relayGroupAuthorsHash(group.authors);
 
@@ -447,6 +479,44 @@ export async function adaptFetchLatestCommand(
         cursor:
           cursorByGroup.get(relayCursorKey(group.relay, authorsHash)) ?? null,
         authorsHash,
+        onPageEvents: (relay, events) => {
+          rawEventCount += events.length;
+
+          for (const event of events) {
+            fetchedEventIds.add(event.id);
+
+            const relayHints = [
+              ...new Set([...(eventRelayHints.get(event.id) ?? []), relay]),
+            ];
+
+            eventRelayHints.set(event.id, relayHints);
+            enqueueNrEvaluation({ db: params.db, event, relayHints });
+
+            for (const reference of [
+              ...extractNip10References(event),
+              ...extractEventReferences(event.content),
+            ]) {
+              relatedEventIds.add(reference.id);
+            }
+
+            if (event.kind === 7) {
+              const targetEventId = reactionTargetId(event);
+
+              if (targetEventId) {
+                const reactions =
+                  audienceReactionsByTarget.get(targetEventId) ?? [];
+
+                reactions.push({
+                  pubkey: event.pubkey,
+                  content: event.content,
+                  createdAt: event.created_at,
+                });
+
+                audienceReactionsByTarget.set(targetEventId, reactions);
+              }
+            }
+          }
+        },
       });
     },
   });
@@ -464,360 +534,354 @@ export async function adaptFetchLatestCommand(
     0,
   );
 
-  const eventRelayHints = new Map<string, string[]>();
-
-  const rawEvents = groupResults.flatMap((result) => {
-    for (const event of result.events) {
-      eventRelayHints.set(event.id, [
-        ...new Set([...(eventRelayHints.get(event.id) ?? []), result.relay]),
-      ]);
-    }
-
-    return result.events;
-  });
-
-  const uniqueEvents = [
-    ...new Map(rawEvents.map((event) => [event.id, event])).values(),
-  ].sort((a, b) => b.created_at - a.created_at);
-
-  const audienceReactionsByTarget = new Map<string, NrAudienceReaction[]>();
-
-  for (const event of uniqueEvents) {
-    if (event.kind !== 7) {
-      continue;
-    }
-
-    const targetEventId = reactionTargetId(event);
-
-    if (!targetEventId) {
-      continue;
-    }
-
-    const reactions = audienceReactionsByTarget.get(targetEventId) ?? [];
-
-    reactions.push({
-      pubkey: event.pubkey,
-      content: event.content,
-      createdAt: event.created_at,
-    });
-
-    audienceReactionsByTarget.set(targetEventId, reactions);
-  }
+  fetching = false;
+  await Promise.all(workers);
 
   await sendFetchStatus({
     params,
-    message: `${uniqueEvents.length} posts are fetched.`,
+    message: `${fetchedEventIds.size} posts are fetched.`,
     output: [
       '1. Fetched Nostr posts.',
-      `2. ${uniqueEvents.length} posts are fetched.`,
+      `2. ${fetchedEventIds.size} posts are fetched.`,
     ].join('\n'),
     progress: 0,
   });
 
-  let skippedCached = 0;
-  let skippedPreviously = 0;
-  let skippedByClassifier = 0;
-  let invalid = 0;
-  let stored = 0;
-  let skippedRelated = 0;
-  let deferredIncomplete = 0;
-  let failedEvents = 0;
-  let evaluatedByAi = 0;
-  let evaluatedByFallback = 0;
-  const eventErrors: string[] = [];
-  const storedIds: string[] = [];
+  async function consumeEvaluationQueue(): Promise<void> {
+    while (true) {
+      const queued = claimNrEvaluation(params.db);
 
-  const relatedEventIds = new Set(
-    uniqueEvents.flatMap((event) => [
-      ...extractNip10References(event).map((reference) => reference.id),
-      ...extractEventReferences(event.content).map((reference) => reference.id),
-    ]),
-  );
-
-  let evaluatedProgress = 0;
-
-  for (const rawEvent of uniqueEvents) {
-    evaluatedProgress += 1;
-    const eventStartedAt = Date.now();
-
-    await sendFetchStatus({
-      params,
-      message: `Evaluating posts (${evaluatedProgress}/${uniqueEvents.length})`,
-      output: [
-        '1. Fetched Nostr posts.',
-        `2. ${uniqueEvents.length} posts are fetched.`,
-        `3. Evaluating posts (${evaluatedProgress}/${uniqueEvents.length})`,
-      ].join('\n'),
-      progress:
-        uniqueEvents.length > 0 ? evaluatedProgress / uniqueEvents.length : 1,
-    });
-
-    if (relatedEventIds.has(rawEvent.id)) {
-      skippedRelated += 1;
-      continue;
-    }
-
-    const cachedEvent = getNr(params.db, rawEvent.id);
-
-    if (
-      cachedEvent &&
-      rawEvent.kind === 1 &&
-      !needsNestedReferences(cachedEvent)
-    ) {
-      skippedCached += 1;
-      continue;
-    }
-
-    if (hasNrSkippedEvent(params.db, rawEvent.id)) {
-      skippedPreviously += 1;
-      continue;
-    }
-
-    const parsed = NostrEventSchema.safeParse(rawEvent);
-
-    if (!parsed.success) {
-      invalid += 1;
-      continue;
-    }
-
-    try {
-      const relayHints = eventRelayHints.get(parsed.data.id) ?? [];
-
-      await sendFetchStatus({
-        params,
-        message: `Loading context (${evaluatedProgress}/${uniqueEvents.length})`,
-        output: [
-          '1. Fetched Nostr posts.',
-          `2. ${uniqueEvents.length} posts are fetched.`,
-          `3. Loading context (${evaluatedProgress}/${uniqueEvents.length})`,
-        ].join('\n'),
-        progress:
-          uniqueEvents.length > 0 ? evaluatedProgress / uniqueEvents.length : 1,
-      });
-
-      const contextStartedAt = Date.now();
-
-      const contextRelays = [
-        ...relayHints,
-        ...parseRelayUrls(process.env.BOT_RELAYS ?? ''),
-      ];
-
-      const threadContextResult = await fetchNip10ThreadContext({
-        pool: params.storedCtx.pool,
-        event: parsed.data,
-        fallbackRelays: contextRelays,
-      });
-
-      const referencedEventsResult = await fetchReferencedEvents({
-        pool: params.storedCtx.pool,
-        content: parsed.data.content,
-        fallbackRelays: contextRelays,
-      });
-
-      const tagReferencedEventsResult = await fetchTagReferencedEvents({
-        pool: params.storedCtx.pool,
-        event: parsed.data,
-        fallbackRelays: contextRelays,
-      });
-
-      let embeddedRepost: NostrEvent | null = null;
-
-      if (parsed.data.kind === 6) {
-        try {
-          const embedded = NostrEventSchema.safeParse(
-            JSON.parse(parsed.data.content),
-          );
-
-          embeddedRepost = embedded.success ? embedded.data : null;
-        } catch {
-          embeddedRepost = null;
+      if (!queued) {
+        if (!fetching) {
+          return;
         }
-      }
 
-      const directlyReferencedEvents = [
-        ...new Map(
-          [
-            ...referencedEventsResult.events,
-            ...tagReferencedEventsResult.events,
-            ...(embeddedRepost ? [embeddedRepost] : []),
-          ].map((event) => [event.id, event]),
-        ).values(),
-      ];
-
-      const activityTarget =
-        parsed.data.kind === 6 ||
-        parsed.data.kind === 7 ||
-        parsed.data.kind === 16
-          ? directlyReferencedEvents[0]
-          : null;
-
-      const nestedSources = activityTarget
-        ? [activityTarget]
-        : [
-            ...new Map(
-              [
-                ...threadContextResult.events,
-                ...referencedEventsResult.events,
-              ].map((event) => [event.id, event]),
-            ).values(),
-          ].slice(0, 5);
-
-      const nestedResults = await Promise.all(
-        nestedSources.map(async (nestedSource) =>
-          Promise.all([
-            fetchReferencedEvents({
-              pool: params.storedCtx.pool,
-              content: nestedSource.content,
-              fallbackRelays: contextRelays,
-            }),
-            fetchNip10ThreadContext({
-              pool: params.storedCtx.pool,
-              event: nestedSource,
-              fallbackRelays: contextRelays,
-            }),
-          ]),
-        ),
-      );
-
-      const referencedEvents = [
-        ...new Map(
-          [
-            ...directlyReferencedEvents,
-            ...nestedResults.flatMap(
-              ([nestedContentResult, nestedThreadResult]) => [
-                ...nestedContentResult.events,
-                ...nestedThreadResult.events,
-              ],
-            ),
-          ].map((event) => [event.id, event]),
-        ).values(),
-      ];
-
-      debug(
-        `nr fetch-latest: loaded context for ${parsed.data.id} in ${Date.now() - contextStartedAt}ms; thread=${threadContextResult.events.length}/${threadContextResult.references.length}, references=${referencedEventsResult.events.length}/${referencedEventsResult.references.length}`,
-      );
-
-      if (
-        threadContextResult.missingIds.length > 0 ||
-        referencedEventsResult.missingIds.length > 0 ||
-        tagReferencedEventsResult.missingIds.length > 0
-      ) {
-        deferredIncomplete += 1;
-
-        debug(
-          `nr fetch-latest: deferred ${parsed.data.id}; missing thread=${threadContextResult.missingIds.join(',') || '(none)'} references=${referencedEventsResult.missingIds.join(',') || '(none)'}`,
-        );
-
+        await new Promise((resolve) => setTimeout(resolve, 100));
         continue;
       }
 
+      const rawEvent = queued.event;
+      evaluatedProgress += 1;
+      const eventStartedAt = Date.now();
+
       await sendFetchStatus({
         params,
-        message: `Classifying posts (${evaluatedProgress}/${uniqueEvents.length})`,
+        message: `Evaluating posts (${evaluatedProgress}/${fetchedEventIds.size})`,
         output: [
           '1. Fetched Nostr posts.',
-          `2. ${uniqueEvents.length} posts are fetched.`,
-          `3. Classifying posts (${evaluatedProgress}/${uniqueEvents.length})`,
+          `2. ${fetchedEventIds.size} posts are fetched.`,
+          `3. Evaluating posts (${evaluatedProgress}/${fetchedEventIds.size})`,
         ].join('\n'),
         progress:
-          uniqueEvents.length > 0 ? evaluatedProgress / uniqueEvents.length : 1,
+          fetchedEventIds.size > 0
+            ? evaluatedProgress / fetchedEventIds.size
+            : 1,
       });
 
-      const classificationStartedAt = Date.now();
+      if (relatedEventIds.has(rawEvent.id)) {
+        skippedRelated += 1;
 
-      const classificationEvent =
-        parsed.data.kind === 6 ||
-        parsed.data.kind === 7 ||
-        parsed.data.kind === 16
-          ? referencedEvents[0]
-          : parsed.data;
-
-      const classification = classificationEvent
-        ? await classifyEventWithNrAi({
-            db: params.db,
-            event: classificationEvent,
-            instructions,
-            threadContextEvents: threadContextResult.events,
-            referencedEvents,
-            audienceReactions:
-              audienceReactionsByTarget.get(classificationEvent.id) ?? [],
-            storedCtx: params.storedCtx,
-            runAgent: params.runAgent,
-          })
-        : {
-            topics: [],
-            moods: [],
-            summary: '',
-            model: 'activity',
-            confidence: 1,
-            skip: false,
-            skipReason: null,
-          };
-
-      debug(
-        `nr fetch-latest: classified ${parsed.data.id} in ${Date.now() - classificationStartedAt}ms with ${classification.model}`,
-      );
-
-      if (classification.model.includes(':fallback')) {
-        evaluatedByFallback += 1;
-      } else {
-        evaluatedByAi += 1;
-      }
-
-      if (classification.skip) {
-        recordNrSkippedEvent({
+        completeNrEvaluation({
           db: params.db,
-          event: parsed.data,
-          classification,
+          eventId: queued.eventId,
+          error: null,
         });
 
-        skippedByClassifier += 1;
         continue;
       }
 
-      if (parsed.data.kind === 7 && classificationEvent) {
-        const cachedTarget = getNr(params.db, classificationEvent.id);
+      const cachedEvent = getNr(params.db, rawEvent.id);
 
-        if (cachedTarget) {
-          await parseAndStoreEvent({
-            db: params.db,
-            event: classificationEvent,
-            forceReclassify: true,
-            relayHints: cachedTarget.relay_hints,
-            threadContext: JSON.parse(
-              cachedTarget.thread_context_json,
-            ) as NostrEvent[],
-            referencedEvents: JSON.parse(
-              cachedTarget.referenced_events_json,
-            ) as NostrEvent[],
-            classify: () => classification,
-          });
-        }
+      if (
+        cachedEvent &&
+        rawEvent.kind === 1 &&
+        !needsNestedReferences(cachedEvent)
+      ) {
+        skippedCached += 1;
+
+        completeNrEvaluation({
+          db: params.db,
+          eventId: queued.eventId,
+          error: null,
+        });
+
+        continue;
       }
 
-      const result = await parseAndStoreEvent({
-        db: params.db,
-        event: parsed.data,
-        forceReclassify: parsed.data.kind !== 1,
-        relayHints,
-        threadContext: threadContextResult.events,
-        referencedEvents,
-        classify: () => classification,
-      });
+      if (hasNrSkippedEvent(params.db, rawEvent.id)) {
+        skippedPreviously += 1;
 
-      stored += result.inserted ? 1 : 0;
-      storedIds.push(result.event.id);
+        completeNrEvaluation({
+          db: params.db,
+          eventId: queued.eventId,
+          error: null,
+        });
 
-      debug(
-        `nr fetch-latest: processed ${parsed.data.id} in ${Date.now() - eventStartedAt}ms; stored=${result.inserted}`,
-      );
-    } catch (error) {
-      failedEvents += 1;
-      eventErrors.push(`${parsed.data.id}: ${errorMessage(error)}`);
+        continue;
+      }
 
-      debug(
-        `nr fetch-latest: failed to process ${parsed.data.id}: ${errorMessage(error)}`,
-      );
+      const parsed = NostrEventSchema.safeParse(rawEvent);
+
+      if (!parsed.success) {
+        invalid += 1;
+
+        completeNrEvaluation({
+          db: params.db,
+          eventId: queued.eventId,
+          error: 'Invalid Nostr event.',
+        });
+
+        continue;
+      }
+
+      try {
+        const relayHints = queued.relayHints;
+
+        await sendFetchStatus({
+          params,
+          message: `Loading context (${evaluatedProgress}/${fetchedEventIds.size})`,
+          output: [
+            '1. Fetched Nostr posts.',
+            `2. ${fetchedEventIds.size} posts are fetched.`,
+            `3. Loading context (${evaluatedProgress}/${fetchedEventIds.size})`,
+          ].join('\n'),
+          progress:
+            fetchedEventIds.size > 0
+              ? evaluatedProgress / fetchedEventIds.size
+              : 1,
+        });
+
+        const contextStartedAt = Date.now();
+
+        const contextRelays = [
+          ...relayHints,
+          ...parseRelayUrls(process.env.BOT_RELAYS ?? ''),
+        ];
+
+        const graph = await params.storedCtx.nostrResolution.resolveGraph({
+          rootEvents: [parsed.data],
+          contextRelays,
+          fallbackRelays: contextRelays,
+          policy: {
+            includeThread: true,
+            includeEmbeds: true,
+            includeInteractions: true,
+            includeReplies: false,
+            maxDepth: 2,
+            maxEvents: 32,
+            maxReferencesPerEvent: 12,
+            timeoutMs: 8_000,
+          },
+          deadlineAtMs: Date.now() + 8_000,
+        });
+
+        const threadContext = directGraphEvents({
+          graph,
+          sourceEventId: parsed.data.id,
+          roles: ['thread-root', 'thread-parent'],
+        });
+
+        const directActivityTarget = directGraphEvents({
+          graph,
+          sourceEventId: parsed.data.id,
+          roles: ['repost-target', 'reaction-target'],
+        })[0];
+
+        let embeddedRepost: NostrEvent | null = null;
+
+        if (parsed.data.kind === 6) {
+          try {
+            const embedded = NostrEventSchema.safeParse(
+              JSON.parse(parsed.data.content),
+            );
+
+            embeddedRepost = embedded.success ? embedded.data : null;
+          } catch {
+            embeddedRepost = null;
+          }
+        }
+
+        const activityTarget = directActivityTarget ?? embeddedRepost;
+        const threadIds = new Set(threadContext.map((event) => event.id));
+
+        const referencedEvents = [
+          ...new Map(
+            [
+              ...reachableGraphEvents({
+                graph,
+                rootEventId: parsed.data.id,
+              }).filter((event) => !threadIds.has(event.id)),
+              ...(embeddedRepost ? [embeddedRepost] : []),
+            ].map((event) => [event.id, event]),
+          ).values(),
+        ];
+
+        const directMissing = hasDirectMissingReference({
+          graph,
+          sourceEventId: parsed.data.id,
+          ignoredRoles: embeddedRepost ? ['repost-target'] : [],
+        });
+
+        debug(
+          `nr fetch-latest: loaded graph context for ${parsed.data.id} in ${Date.now() - contextStartedAt}ms; thread=${threadContext.length}, references=${referencedEvents.length}`,
+        );
+
+        if (directMissing) {
+          deferredIncomplete += 1;
+
+          debug(
+            `nr fetch-latest: deferred ${parsed.data.id}; direct graph reference missing`,
+          );
+
+          failNrEvaluation({
+            db: params.db,
+            eventId: queued.eventId,
+            error: 'Deferred because a direct graph reference is missing.',
+          });
+
+          continue;
+        }
+
+        await sendFetchStatus({
+          params,
+          message: `Classifying posts (${evaluatedProgress}/${fetchedEventIds.size})`,
+          output: [
+            '1. Fetched Nostr posts.',
+            `2. ${fetchedEventIds.size} posts are fetched.`,
+            `3. Classifying posts (${evaluatedProgress}/${fetchedEventIds.size})`,
+          ].join('\n'),
+          progress:
+            fetchedEventIds.size > 0
+              ? evaluatedProgress / fetchedEventIds.size
+              : 1,
+        });
+
+        const classificationStartedAt = Date.now();
+
+        const classificationEvent =
+          parsed.data.kind === 6 ||
+          parsed.data.kind === 7 ||
+          parsed.data.kind === 16
+            ? activityTarget
+            : parsed.data;
+
+        const classificationAbortController = new AbortController();
+
+        const classification = classificationEvent
+          ? await withTimeout({
+              operation: classifyEventWithNrAi({
+                db: params.db,
+                event: classificationEvent,
+                instructions,
+                threadContextEvents: threadContext,
+                referencedEvents,
+                audienceReactions:
+                  audienceReactionsByTarget.get(classificationEvent.id) ?? [],
+                storedCtx: params.storedCtx,
+                runAgent: params.runAgent,
+                abortSignal: classificationAbortController.signal,
+              }),
+              label: `nr classification ${parsed.data.id}`,
+              timeoutMs: CLASSIFICATION_TIMEOUT_MS,
+              abortController: classificationAbortController,
+            })
+          : {
+              topics: [],
+              moods: [],
+              summary: '',
+              model: 'activity',
+              confidence: 1,
+              skip: false,
+              skipReason: null,
+            };
+
+        debug(
+          `nr fetch-latest: classified ${parsed.data.id} in ${Date.now() - classificationStartedAt}ms with ${classification.model}`,
+        );
+
+        if (classification.model.includes(':fallback')) {
+          evaluatedByFallback += 1;
+        } else {
+          evaluatedByAi += 1;
+        }
+
+        if (classification.skip) {
+          recordNrSkippedEvent({
+            db: params.db,
+            event: parsed.data,
+            classification,
+          });
+
+          skippedByClassifier += 1;
+
+          completeNrEvaluation({
+            db: params.db,
+            eventId: queued.eventId,
+            error: null,
+          });
+
+          continue;
+        }
+
+        if (parsed.data.kind === 7 && classificationEvent) {
+          const cachedTarget = getNr(params.db, classificationEvent.id);
+
+          if (cachedTarget) {
+            await parseAndStoreEvent({
+              db: params.db,
+              event: classificationEvent,
+              forceReclassify: true,
+              relayHints: cachedTarget.relay_hints,
+              threadContext: JSON.parse(
+                cachedTarget.thread_context_json,
+              ) as NostrEvent[],
+              referencedEvents: JSON.parse(
+                cachedTarget.referenced_events_json,
+              ) as NostrEvent[],
+              nostrResolution: params.storedCtx.nostrResolution,
+              classify: () => classification,
+            });
+          }
+        }
+
+        const result = await parseAndStoreEvent({
+          db: params.db,
+          event: parsed.data,
+          forceReclassify: parsed.data.kind !== 1,
+          relayHints,
+          threadContext,
+          referencedEvents,
+          nostrResolution: params.storedCtx.nostrResolution,
+          classify: () => classification,
+        });
+
+        stored += result.inserted ? 1 : 0;
+        storedIds.push(result.event.id);
+
+        debug(
+          `nr fetch-latest: processed ${parsed.data.id} in ${Date.now() - eventStartedAt}ms; stored=${result.inserted}`,
+        );
+
+        completeNrEvaluation({
+          db: params.db,
+          eventId: queued.eventId,
+          error: null,
+        });
+      } catch (error) {
+        failedEvents += 1;
+        const message = errorMessage(error);
+        eventErrors.push(`${parsed.data.id}: ${message}`);
+
+        failNrEvaluation({
+          db: params.db,
+          eventId: queued.eventId,
+          error: message,
+        });
+
+        debug(
+          `nr fetch-latest: failed to process ${parsed.data.id}: ${errorMessage(error)}`,
+        );
+      }
     }
   }
 
@@ -855,6 +919,14 @@ export async function adaptFetchLatestCommand(
     error: errors.length > 0 ? errors.join('; ') : null,
   });
 
+  void params.storedCtx.wot
+    .refreshRelayLists?.(authors)
+    .catch((error) =>
+      debug(
+        `nr fetch-latest: background relay-list refresh failed: ${errorMessage(error)}`,
+      ),
+    );
+
   return [
     explicitSince === null && explicitUntil === null
       ? 'Fetched latest notes from follows.'
@@ -868,8 +940,8 @@ export async function adaptFetchLatestCommand(
     `Failed relay groups: ${failedRelayCount}`,
     `Incomplete relay groups: ${incompleteRelayCount}`,
     `Fetch coverage status: ${status}`,
-    `Events returned: ${rawEvents.length}`,
-    `Unique events considered: ${uniqueEvents.length}`,
+    `Events returned: ${rawEventCount}`,
+    `Unique events considered: ${fetchedEventIds.size}`,
     `Skipped related/context events: ${skippedRelated}`,
     `Skipped cached: ${skippedCached}`,
     `Skipped previously: ${skippedPreviously}`,

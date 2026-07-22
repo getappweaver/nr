@@ -119,6 +119,7 @@ export async function adaptMarkCommand(
         relayHints: [],
         threadContext: [],
         referencedEvents: [],
+        nostrResolution: params.storedCtx.nostrResolution,
         classify: classifyEvent,
       });
 

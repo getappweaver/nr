@@ -1,6 +1,7 @@
 import { createHelpSubcommandDefinition } from '@src/commands/help/command';
 import type { CommandDefinition } from '@src/system/command-definition';
 
+import { authorInterestRecordDefinition } from './commands/author-interest-record/definition';
 import { contextDefinition } from './commands/context/definition';
 import { fetchLatestDefinition } from './commands/fetch-latest/definition';
 import { interactionRecordDefinition } from './commands/interaction-record/definition';
@@ -36,6 +37,7 @@ export const commandDefinition = (
     fetchLatestDefinition(prefix, alias),
     interactionRecordDefinition(),
     interestRecordDefinition(),
+    authorInterestRecordDefinition(),
     listParseSingleDefinition(prefix, alias),
     listDefinition(prefix, alias),
   ],

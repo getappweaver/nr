@@ -14,6 +14,7 @@ import type { MessageSource } from '@src/messaging';
 import { parseCliInput, parseStructuredInput } from '@src/system/parser-cli';
 import type { WebHandlerResult } from '@src/web/ui-schema';
 
+import { adaptAuthorInterestRecordCommand } from './commands/author-interest-record/adapter';
 import { adaptContextCommand } from './commands/context/adapter';
 import { adaptFetchLatestCommand } from './commands/fetch-latest/adapter';
 import { adaptHelpCommand } from './commands/help/adapter';
@@ -44,6 +45,7 @@ type NrSubcommand =
   | 'latest'
   | 'interaction-record'
   | 'interest-record'
+  | 'author-interest-record'
   | 'debug'
   | 'list-parse-single'
   | 'list';
@@ -73,6 +75,7 @@ const subcommandAdapters: Record<NrSubcommand, NrCommandAdapter> = {
   latest: adaptFetchLatestCommand,
   'interaction-record': adaptInteractionRecordCommand,
   'interest-record': adaptInterestRecordCommand,
+  'author-interest-record': adaptAuthorInterestRecordCommand,
   debug: adaptListParseSingleCommand,
   'list-parse-single': adaptListParseSingleCommand,
   list: adaptListCommand,
@@ -112,6 +115,7 @@ function isNrSubcommand(value: string): value is NrSubcommand {
     value === 'latest' ||
     value === 'interaction-record' ||
     value === 'interest-record' ||
+    value === 'author-interest-record' ||
     value === 'debug' ||
     value === 'list-parse-single' ||
     value === 'list'

@@ -88,6 +88,7 @@ export async function adaptParseCommand(
     relayHints,
     threadContext: threadContextResult.events,
     referencedEvents: referencedEventsResult.events,
+    nostrResolution: params.storedCtx.nostrResolution,
     classify: (event) =>
       classifyEventWithNrAi({
         db: params.db,
@@ -98,6 +99,7 @@ export async function adaptParseCommand(
         audienceReactions: [],
         storedCtx: params.storedCtx,
         runAgent: params.runAgent,
+        abortSignal: null,
       }),
   });
 

@@ -1,7 +1,7 @@
 import type { CachedProfile } from '@src/db';
 import type { WebNode, WebNodeRoot } from '@src/web/ui-schema';
 
-import type { NrSettings } from '../../../settings';
+import { nrSharePrefixes, type NrSettings } from '../../../settings';
 
 import { el, eventNode, text } from '../../list/renderers/web';
 import type { NrEvent, NrInteraction } from '../../shared/types';
@@ -162,6 +162,7 @@ export function renderNrListParseSingleWeb({
             {
               type: 'element' as const,
               tag: 'tree' as const,
+              renderKey: 'nr:parse-single:tree',
               props: {
                 gap: 'xs' as const,
                 filterable: true as const,
@@ -174,9 +175,12 @@ export function renderNrListParseSingleWeb({
                   profiles,
                   showReplyContext: true,
                   interactions,
-                  localPreference: null,
+                  localPreferences: new Map(),
+                  authorPreferences: new Map(),
+                  sharePrefixes: nrSharePrefixes(settings),
                   rankingScore: null,
                   mode: 'timeline',
+                  renderScope: 'parse-single',
                 }),
               ],
             },

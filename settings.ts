@@ -1,12 +1,21 @@
 import type { Database } from 'bun:sqlite';
 
 import type { AgentBackendName } from '@src/db';
+import type { NostrSharePrefixes } from '@src/web/nostr-share';
 
 export type NrSettings = {
   backend: AgentBackendName | null;
   model: string | null;
   instructions: string;
+  eventSharePrefix: string;
+  profileSharePrefix: string;
+  relayFetchConcurrency: number;
+  aiEvaluationConcurrency: number;
 };
+
+export const DEFAULT_NR_SHARE_PREFIX = 'nostr://';
+export const DEFAULT_NR_RELAY_FETCH_CONCURRENCY = 3;
+export const DEFAULT_NR_AI_EVALUATION_CONCURRENCY = 2;
 
 export const DEFAULT_NR_CLASSIFICATION_INSTRUCTIONS = `Classify this Nostr event for a personal unread radar.
 
@@ -29,7 +38,10 @@ Guidelines:
 - Moods describe tone or intent.
 - Reuse existing topic and mood tags from the context when they match.
 - Consolidate similar concepts into the existing tags instead of creating near-duplicates.
-- Prefer 1-5 topics and 1-3 moods.
+- Prefer 2-5 topics and 1-3 moods when the event has enough detail.
+- Include specific, durable topic tags for named organizations, people, legislation, protocols, products, assets, and concrete subtopics when central to the event. Use lowercase hyphenated forms, such as "blackrock", "clarity-act", and "bitcoin-price".
+- Keep a useful broad topic alongside specific tags when relevant, such as "bitcoin" with "bitcoin-price". Do not use generic labels such as "informative" as topics.
+- Use moods only for an expressed tone or intent, not content type. For example, do not use "informative" as a mood.
 - If unsure, use topic "general" and mood "neutral".
 - Set "skip": true only when the event is not useful for this user's unread radar, only if the user is defined that below.
 - If "skip": true, explain briefly in "skipReason".
@@ -40,6 +52,10 @@ const SETTINGS_KEYS = {
   backend: 'backend',
   model: 'model',
   instructions: 'instructions',
+  eventSharePrefix: 'event_share_prefix',
+  profileSharePrefix: 'profile_share_prefix',
+  relayFetchConcurrency: 'relay_fetch_concurrency',
+  aiEvaluationConcurrency: 'ai_evaluation_concurrency',
 } as const;
 
 export function createNrSettingsTable(db: Database): void {
@@ -78,6 +94,33 @@ function parseBackend(value: string | null): AgentBackendName | null {
   return null;
 }
 
+function sharePrefix(value: string | null): string {
+  return value?.trim() || DEFAULT_NR_SHARE_PREFIX;
+}
+
+function relayFetchConcurrency(value: string | null): number {
+  const parsed = value ? Number.parseInt(value, 10) : Number.NaN;
+
+  return Number.isInteger(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_NR_RELAY_FETCH_CONCURRENCY;
+}
+
+function aiEvaluationConcurrency(value: string | null): number {
+  const parsed = value ? Number.parseInt(value, 10) : Number.NaN;
+
+  return Number.isInteger(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_NR_AI_EVALUATION_CONCURRENCY;
+}
+
+export function nrSharePrefixes(settings: NrSettings): NostrSharePrefixes {
+  return {
+    nevent: settings.eventSharePrefix,
+    nprofile: settings.profileSharePrefix,
+  };
+}
+
 export function getNrSettings(db: Database): NrSettings {
   return {
     backend: parseBackend(getSetting(db, SETTINGS_KEYS.backend)),
@@ -85,6 +128,18 @@ export function getNrSettings(db: Database): NrSettings {
     instructions:
       getSetting(db, SETTINGS_KEYS.instructions) ??
       DEFAULT_NR_CLASSIFICATION_INSTRUCTIONS,
+    eventSharePrefix: sharePrefix(
+      getSetting(db, SETTINGS_KEYS.eventSharePrefix),
+    ),
+    profileSharePrefix: sharePrefix(
+      getSetting(db, SETTINGS_KEYS.profileSharePrefix),
+    ),
+    relayFetchConcurrency: relayFetchConcurrency(
+      getSetting(db, SETTINGS_KEYS.relayFetchConcurrency),
+    ),
+    aiEvaluationConcurrency: aiEvaluationConcurrency(
+      getSetting(db, SETTINGS_KEYS.aiEvaluationConcurrency),
+    ),
   };
 }
 
@@ -93,6 +148,10 @@ type SaveNrSettingsProps = {
   backend: AgentBackendName | null;
   model: string | null;
   instructions: string | null;
+  eventSharePrefix: string;
+  profileSharePrefix: string;
+  relayFetchConcurrency: number;
+  aiEvaluationConcurrency: number;
 };
 
 export function saveNrSettings({
@@ -100,6 +159,10 @@ export function saveNrSettings({
   backend,
   model,
   instructions,
+  eventSharePrefix,
+  profileSharePrefix,
+  relayFetchConcurrency,
+  aiEvaluationConcurrency,
 }: SaveNrSettingsProps): NrSettings {
   if (backend === null) {
     deleteSetting(db, SETTINGS_KEYS.backend);
@@ -119,6 +182,21 @@ export function saveNrSettings({
     setSetting(db, SETTINGS_KEYS.instructions, instructions.trim());
   }
 
+  setSetting(db, SETTINGS_KEYS.eventSharePrefix, eventSharePrefix.trim());
+  setSetting(db, SETTINGS_KEYS.profileSharePrefix, profileSharePrefix.trim());
+
+  setSetting(
+    db,
+    SETTINGS_KEYS.relayFetchConcurrency,
+    String(relayFetchConcurrency),
+  );
+
+  setSetting(
+    db,
+    SETTINGS_KEYS.aiEvaluationConcurrency,
+    String(aiEvaluationConcurrency),
+  );
+
   return getNrSettings(db);
 }
 
@@ -126,6 +204,10 @@ export function resetNrSettings(db: Database): NrSettings {
   deleteSetting(db, SETTINGS_KEYS.backend);
   deleteSetting(db, SETTINGS_KEYS.model);
   deleteSetting(db, SETTINGS_KEYS.instructions);
+  deleteSetting(db, SETTINGS_KEYS.eventSharePrefix);
+  deleteSetting(db, SETTINGS_KEYS.profileSharePrefix);
+  deleteSetting(db, SETTINGS_KEYS.relayFetchConcurrency);
+  deleteSetting(db, SETTINGS_KEYS.aiEvaluationConcurrency);
 
   return getNrSettings(db);
 }

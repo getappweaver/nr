@@ -1,3 +1,4 @@
+import { parseRelayUrls } from '@src/env';
 import type { WebNodeRoot } from '@src/web/ui-schema';
 
 import {
@@ -5,31 +6,21 @@ import {
   saveNrListFilter,
   saveNrProfileEvents,
 } from '../../db';
+import {
+  hydrateStoredNrEvents,
+  parseNostrEventArray,
+  seedStoredNrEvents,
+} from '../../nostr-resolution';
 import { extractProfileReferences } from '../../references';
 import type { NrCommandAdapterParams } from '../../types/adapter-params';
 
-import type {
-  NostrEvent,
-  NrEvent,
-  NrListData,
-  NrListMode,
-} from '../shared/types';
+import type { NrEvent, NrListData, NrListMode } from '../shared/types';
 
 import { normalizeNrFeedCategories } from './categories';
 import { handleListCommand } from './handler';
 import { fetchNrProfileEvents } from './profile-events';
 import { renderNrListText } from './renderers/text';
 import { renderNrListWeb } from './renderers/web';
-
-function parseContextEvents(rawJson: string): NostrEvent[] {
-  try {
-    const parsed = JSON.parse(rawJson) as unknown;
-
-    return Array.isArray(parsed) ? (parsed as NostrEvent[]) : [];
-  } catch {
-    return [];
-  }
-}
 
 function collectProfilePubkeys(listData: NrListData): string[] {
   const events: NrEvent[] = [
@@ -46,19 +37,19 @@ function collectProfilePubkeys(listData: NrListData): string[] {
           ...extractProfileReferences(event.content).map(
             (reference) => reference.pubkey,
           ),
-          ...parseContextEvents(event.thread_context_json).map(
+          ...parseNostrEventArray(event.thread_context_json).map(
             (contextEvent) => contextEvent.pubkey,
           ),
-          ...parseContextEvents(event.thread_context_json).flatMap(
+          ...parseNostrEventArray(event.thread_context_json).flatMap(
             (contextEvent) =>
               extractProfileReferences(contextEvent.content).map(
                 (reference) => reference.pubkey,
               ),
           ),
-          ...parseContextEvents(event.referenced_events_json).map(
+          ...parseNostrEventArray(event.referenced_events_json).map(
             (referencedEvent) => referencedEvent.pubkey,
           ),
-          ...parseContextEvents(event.referenced_events_json).flatMap(
+          ...parseNostrEventArray(event.referenced_events_json).flatMap(
             (referencedEvent) =>
               extractProfileReferences(referencedEvent.content).map(
                 (reference) => reference.pubkey,
@@ -108,6 +99,24 @@ export async function adaptListCommand(
 
   const listData = handleListCommand({ db: params.db, mode });
 
+  const storedEvents = [
+    ...listData.topicGroups.flatMap((group) => group.events),
+    ...listData.moodGroups.flatMap((group) => group.events),
+    ...listData.forYouEvents,
+    ...listData.activityEvents,
+  ];
+
+  await seedStoredNrEvents({
+    service: params.storedCtx.nostrResolution,
+    events: storedEvents,
+  });
+
+  await hydrateStoredNrEvents({
+    service: params.storedCtx.nostrResolution,
+    events: storedEvents,
+    contextRelays: parseRelayUrls(process.env.BOT_RELAYS ?? ''),
+  });
+
   if (mode === 'profile') {
     const cachedEvents = listNrProfileEvents({
       db: params.db,
@@ -131,9 +140,10 @@ export async function adaptListCommand(
     return renderNrListWeb({
       alias: params.alias,
       listData,
-      profiles: await params.storedCtx.wot.getProfiles(
-        collectProfilePubkeys(listData),
-      ),
+      profiles: await params.storedCtx.wot.getProfiles({
+        pubkeys: collectProfilePubkeys(listData),
+        waitForMissing: false,
+      }),
     });
   }
 

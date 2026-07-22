@@ -1,16 +1,17 @@
 {
   "name": "appweaver-nr-plugin",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "appweaver": {
     "title": "Nostr Radar",
     "icon": "./commands/list/renderers/list.svg",
     "website": "https://getappweaver.com/apps/nostr-radar",
-    "coreApiVersion": "^9.53.0",
+    "coreApiVersion": "^10.0.0",
     "description": "Official AppWeaver Nostr Radar app. Adds an intentional Nostr reader that fetches posts from your follows, classifies them with AI, and helps you review important conversations by topic, mood, timeline, or archive."
   },
   "description": "Official AppWeaver Nostr Radar app. Adds an intentional Nostr reader that fetches posts from your follows, classifies them with AI, and helps you review important conversations by topic, mood, timeline, or archive.",
   "type": "module",
   "scripts": {
-    "contrib:setup": "chmod +x ../../scripts/commit-msg ../../scripts/post-commit ../../scripts/ngit-helper.sh && git config core.hooksPath ../../scripts"
+    "contrib:setup": "chmod +x ../../scripts/commit-msg ../../scripts/post-commit ../../scripts/ngit-helper.sh && git config core.hooksPath ../../scripts",
+    "migrate:compact-context": "bun run scripts/migrate-compact-context.ts"
   }
 }

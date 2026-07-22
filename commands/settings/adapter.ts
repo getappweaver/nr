@@ -48,11 +48,30 @@ function parseBackend(value: unknown): AgentBackendName | null | undefined {
   throw new Error('backend must be cursor or opencode');
 }
 
+function parsePositiveInteger(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+
+  const parsed =
+    typeof value === 'number' ? value : Number.parseInt(String(value), 10);
+
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error('Relay fetch concurrency must be a positive integer.');
+  }
+
+  return parsed;
+}
+
 function formatSettings(settings: ReturnType<typeof getNrSettings>): string {
   return [
     'nr parse AI settings:',
     `Backend: ${settings.backend ?? '(default)'}`,
     `Model: ${settings.model ?? '(default)'}`,
+    `Event share URL: ${settings.eventSharePrefix}`,
+    `Profile share URL: ${settings.profileSharePrefix}`,
+    `Relay fetch concurrency: ${settings.relayFetchConcurrency}`,
+    `AI evaluation concurrency: ${settings.aiEvaluationConcurrency}`,
     '',
     'Instructions:',
     settings.instructions,
@@ -82,7 +101,15 @@ function renderSettingsWeb({
         'form',
         {
           className: 'web-form web-form--stacked',
-          formOptionFieldNames: ['backend', 'model', 'instructions'],
+          formOptionFieldNames: [
+            'backend',
+            'model',
+            'instructions',
+            'event_share_prefix',
+            'profile_share_prefix',
+            'relay_fetch_concurrency',
+            'ai_evaluation_concurrency',
+          ],
           action: {
             type: 'command',
             command: alias,
@@ -96,6 +123,7 @@ function renderSettingsWeb({
         },
         [
           el('text', { weight: 'semibold' }, [text('Nostr radar settings')]),
+          el('text', { weight: 'semibold', size: 'sm' }, [text('AI backend')]),
           el(
             'select',
             {
@@ -110,6 +138,7 @@ function renderSettingsWeb({
             },
             [],
           ),
+          el('text', { weight: 'semibold', size: 'sm' }, [text('AI model')]),
           el(
             'textField',
             {
@@ -119,6 +148,21 @@ function renderSettingsWeb({
             },
             [],
           ),
+          el('text', { weight: 'semibold', size: 'sm' }, [
+            text('Concurrent AI evaluators'),
+          ]),
+          el(
+            'textField',
+            {
+              formFieldName: 'ai_evaluation_concurrency',
+              inputPlaceholder: '2',
+              value: String(settings.aiEvaluationConcurrency),
+            },
+            [],
+          ),
+          el('text', { weight: 'semibold', size: 'sm' }, [
+            text('Classification instructions'),
+          ]),
           el(
             'textArea',
             {
@@ -126,6 +170,44 @@ function renderSettingsWeb({
               inputPlaceholder: 'classification instructions',
               value: settings.instructions,
               maxRows: 14,
+            },
+            [],
+          ),
+          el('text', { weight: 'semibold', size: 'sm' }, [
+            text('Event share URL'),
+          ]),
+          el(
+            'textField',
+            {
+              formFieldName: 'event_share_prefix',
+              inputPlaceholder:
+                'nostr:// or https://jumble.social/notes/[nevent]',
+              value: settings.eventSharePrefix,
+            },
+            [],
+          ),
+          el('text', { weight: 'semibold', size: 'sm' }, [
+            text('Profile share URL'),
+          ]),
+          el(
+            'textField',
+            {
+              formFieldName: 'profile_share_prefix',
+              inputPlaceholder:
+                'nostr:// or https://jumble.social/users/[nprofile]',
+              value: settings.profileSharePrefix,
+            },
+            [],
+          ),
+          el('text', { weight: 'semibold', size: 'sm' }, [
+            text('Concurrent relay groups'),
+          ]),
+          el(
+            'textField',
+            {
+              formFieldName: 'relay_fetch_concurrency',
+              inputPlaceholder: '3',
+              value: String(settings.relayFetchConcurrency),
             },
             [],
           ),
@@ -184,8 +266,30 @@ export function adaptSettingsCommand(params: NrCommandAdapterParams) {
     params.parsed.options.instructions,
   );
 
+  const eventSharePrefix = asOptionalStringOverride(
+    params.parsed.options.event_share_prefix,
+  );
+
+  const profileSharePrefix = asOptionalStringOverride(
+    params.parsed.options.profile_share_prefix,
+  );
+
+  const relayFetchConcurrency = parsePositiveInteger(
+    params.parsed.options.relay_fetch_concurrency,
+  );
+
+  const aiEvaluationConcurrency = parsePositiveInteger(
+    params.parsed.options.ai_evaluation_concurrency,
+  );
+
   const hasUpdates =
-    backend !== undefined || model !== undefined || instructions !== undefined;
+    backend !== undefined ||
+    model !== undefined ||
+    instructions !== undefined ||
+    eventSharePrefix !== undefined ||
+    profileSharePrefix !== undefined ||
+    relayFetchConcurrency !== undefined ||
+    aiEvaluationConcurrency !== undefined;
 
   if (!hasUpdates) {
     const settings = getNrSettings(params.db);
@@ -209,6 +313,18 @@ export function adaptSettingsCommand(params: NrCommandAdapterParams) {
     model: model === undefined ? current.model : model,
     instructions:
       instructions === undefined ? current.instructions : instructions,
+    eventSharePrefix:
+      eventSharePrefix === undefined
+        ? current.eventSharePrefix
+        : (eventSharePrefix ?? ''),
+    profileSharePrefix:
+      profileSharePrefix === undefined
+        ? current.profileSharePrefix
+        : (profileSharePrefix ?? ''),
+    relayFetchConcurrency:
+      relayFetchConcurrency ?? current.relayFetchConcurrency,
+    aiEvaluationConcurrency:
+      aiEvaluationConcurrency ?? current.aiEvaluationConcurrency,
   });
 
   if (params.source === 'web') {

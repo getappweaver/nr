@@ -127,6 +127,7 @@ export async function adaptReevaluateCommand(
       relayHints,
       threadContext: threadContextResult.events,
       referencedEvents,
+      nostrResolution: params.storedCtx.nostrResolution,
       classify: (eventToClassify) =>
         classifyEventWithNrAi({
           db: params.db,
@@ -137,6 +138,7 @@ export async function adaptReevaluateCommand(
           audienceReactions: [],
           storedCtx: params.storedCtx,
           runAgent: params.runAgent,
+          abortSignal: null,
         }),
     })
   ).event;

@@ -1,18 +1,22 @@
 import { nip19 } from 'nostr-tools';
 
 import type { CachedProfile } from '@src/db';
+import { nostrShareUrl, type NostrSharePrefixes } from '@src/web/nostr-share';
 import type { WebNode, WebNodeRoot } from '@src/web/ui-schema';
 
+import { parseNostrEventArray } from '../../../nostr-resolution';
 import {
   extractAddressReferences,
   extractEventReferences,
   extractProfileReferences,
 } from '../../../references';
+import { nrSharePrefixes } from '../../../settings';
 import { extractNip10References } from '../../../thread-context';
 
 import { NR_FETCH_STATUS_TARGET_ID } from '../../fetch-status';
 import {
   NostrEventSchema,
+  type NrAuthorPreferenceValue,
   type NrInteraction,
   type NostrEvent,
   type NrEvent,
@@ -30,6 +34,7 @@ import {
 } from '../categories';
 
 import { fetchCoverageBar, fetchCoverageStylesheet } from './fetch-coverage';
+import { authorPreferenceActions } from './profile';
 
 const NR_LIST_FILTER_REVEAL_ID = 'nr-list-filter';
 
@@ -119,6 +124,14 @@ export function el(
   return { type: 'element', tag, props, children } as WebNode;
 }
 
+function keyed(renderKey: string, node: WebNode): WebNode {
+  return node.type === 'element' ? { ...node, renderKey } : node;
+}
+
+function entityKey(eventId: string): string {
+  return `nostr-event:${eventId}`;
+}
+
 function npubForPubkey(pubkey: string): string | undefined {
   try {
     return nip19.npubEncode(pubkey);
@@ -140,18 +153,21 @@ function neventForEvent(event: NrEvent | NostrEvent): string | undefined {
   }
 }
 
-function openInNostrAction(event: NrEvent | NostrEvent) {
+function openInNostrUrl(
+  event: NrEvent | NostrEvent,
+  sharePrefixes: NostrSharePrefixes,
+) {
   const nevent = neventForEvent(event);
 
   if (!nevent) {
     return undefined;
   }
 
-  return {
-    type: 'clientAction' as const,
-    action: 'web.openUrl',
-    payload: { url: `nostr://${nevent}` },
-  };
+  return nostrShareUrl({
+    type: 'nevent',
+    identifier: nevent,
+    prefixes: sharePrefixes,
+  });
 }
 
 function copyNeventAction(event: NrEvent | NostrEvent) {
@@ -324,6 +340,7 @@ function replyEventAction({
       eventAuthorName: post.authorName,
       eventAuthorUsername: post.authorUsername,
       eventAuthorPicture: post.authorPicture,
+      eventRawJson: event.raw_json,
       rootEventId: root.id,
       rootPubkey: root.pubkey,
       relayHints: post.relayHints,
@@ -355,6 +372,7 @@ function replyNostrEventAction({
       eventAuthorName: profile?.displayName ?? null,
       eventAuthorUsername: profile?.name ?? null,
       eventAuthorPicture: profile?.picture ?? null,
+      eventRawJson: JSON.stringify(event),
       rootEventId: root.id,
       rootPubkey: root.pubkey,
       relayHints: [],
@@ -375,6 +393,18 @@ function forYouMetadata(event: NrEvent, score: number): WebNode {
     { className: 'nr-for-you-metadata', size: 'sm', tone: 'muted' },
     [text(`Topics: ${topics} . Moods: ${moods} . Score: ${score.toFixed(2)}`)],
   );
+}
+
+function summaryNodes(summary: string): WebNode[] {
+  const value = summary.trim();
+
+  return value
+    ? [
+        el('text', { className: 'nr-event-summary', size: 'sm' }, [
+          text(`Summary: ${value}`),
+        ]),
+      ]
+    : [];
 }
 
 function countLabel(label: string, count: number): string {
@@ -422,6 +452,7 @@ function markAction({ alias, eventId, state, mode }: MarkActionProps) {
     arguments: { event_id: eventId },
     options: { [state]: true },
     recordInTimeline: false,
+    pendingUi: { presentation: 'entity' as const, label: 'Updating...' },
     refresh: {
       command: alias,
       subcommand: 'list',
@@ -432,7 +463,13 @@ function markAction({ alias, eventId, state, mode }: MarkActionProps) {
   };
 }
 
-function readAction(alias: string, eventId: string, mode: NrListMode | null) {
+type ReadActionProps = {
+  alias: string;
+  eventId: string;
+  mode: NrListMode | null;
+};
+
+function readAction({ alias, eventId, mode }: ReadActionProps) {
   return markAction({ alias, eventId, state: 'read', mode });
 }
 
@@ -454,6 +491,7 @@ function localPreferenceAction({
     arguments: {},
     options: { target_event_id: eventId, preference },
     recordInTimeline: false,
+    pendingUi: { presentation: 'entity' as const, label: 'Updating...' },
     refresh: {
       command: alias,
       subcommand: 'list',
@@ -538,6 +576,7 @@ function markRawEventAction({
     arguments: { event_id: event.id },
     options: { [state]: true, event_json: JSON.stringify(event) },
     recordInTimeline: false,
+    pendingUi: { presentation: 'entity' as const, label: 'Updating...' },
     refresh: {
       command: alias,
       subcommand: 'list',
@@ -575,12 +614,14 @@ type ReevaluateActionProps = {
   alias: string;
   eventId: string;
   eventJson: string | null;
+  mode: NrListMode;
 };
 
 function reevaluateAction({
   alias,
   eventId,
   eventJson,
+  mode,
 }: ReevaluateActionProps) {
   return {
     type: 'command' as const,
@@ -589,11 +630,12 @@ function reevaluateAction({
     arguments: { event_id: eventId },
     options: eventJson ? { event_json: eventJson } : {},
     recordInTimeline: true,
+    pendingUi: { presentation: 'entity' as const, label: 'Updating...' },
     refresh: {
       command: alias,
       subcommand: 'list',
       arguments: {},
-      options: {},
+      options: { mode },
       recordInTimeline: false,
     },
   };
@@ -603,8 +645,9 @@ function eventActionsMenu(
   alias: string,
   event: NrEvent,
   mode: NrListMode,
+  sharePrefixes: NostrSharePrefixes,
 ): WebNode {
-  const openAction = openInNostrAction(event);
+  const openUrl = openInNostrUrl(event, sharePrefixes);
   const copyAction = copyNeventAction(event);
 
   return {
@@ -617,14 +660,15 @@ function eventActionsMenu(
       stopPropagation: true,
     },
     children: [
-      ...(openAction
+      ...(openUrl
         ? [
             {
               type: 'element' as const,
               tag: 'menuItem' as const,
               props: {
                 label: 'Open in nostr',
-                action: openAction,
+                href: openUrl,
+                external: true,
               },
             },
           ]
@@ -646,7 +690,11 @@ function eventActionsMenu(
         tag: 'menuItem',
         props: {
           label: 'Read',
-          action: readAction(alias, event.id, mode),
+          action: readAction({
+            alias,
+            eventId: event.id,
+            mode,
+          }),
         },
       },
       {
@@ -666,6 +714,7 @@ function eventActionsMenu(
             alias,
             eventId: event.id,
             eventJson: null,
+            mode,
           }),
         },
       },
@@ -678,13 +727,15 @@ function referencedEventActionsMenu({
   event,
   archived,
   mode,
+  sharePrefixes,
 }: {
   alias: string;
   event: NostrEvent;
   archived: boolean;
   mode: NrListMode;
+  sharePrefixes: NostrSharePrefixes;
 }): WebNode {
-  const openAction = openInNostrAction(event);
+  const openUrl = openInNostrUrl(event, sharePrefixes);
   const copyAction = copyNeventAction(event);
   const eventJson = JSON.stringify(event);
 
@@ -698,12 +749,16 @@ function referencedEventActionsMenu({
       stopPropagation: true,
     },
     children: [
-      ...(openAction
+      ...(openUrl
         ? [
             {
               type: 'element' as const,
               tag: 'menuItem' as const,
-              props: { label: 'Open in nostr', action: openAction },
+              props: {
+                label: 'Open in nostr',
+                href: openUrl,
+                external: true,
+              },
             },
           ]
         : []),
@@ -742,7 +797,12 @@ function referencedEventActionsMenu({
         tag: 'menuItem',
         props: {
           label: 'Reevaluate',
-          action: reevaluateAction({ alias, eventId: event.id, eventJson }),
+          action: reevaluateAction({
+            alias,
+            eventId: event.id,
+            eventJson,
+            mode,
+          }),
         },
       },
     ],
@@ -750,27 +810,19 @@ function referencedEventActionsMenu({
 }
 
 function referencedEvents(event: NrEvent): NostrEvent[] {
-  try {
-    const parsed = JSON.parse(event.referenced_events_json) as unknown;
-
-    return Array.isArray(parsed) ? (parsed as NostrEvent[]) : [];
-  } catch {
-    return [];
-  }
+  return parseNostrEventArray(event.referenced_events_json);
 }
 
 function threadContextEvents(event: NrEvent): NostrEvent[] {
   try {
-    const parsed = JSON.parse(event.thread_context_json) as unknown;
+    const parsed = parseNostrEventArray(event.thread_context_json);
     const rawEvent = NostrEventSchema.parse(JSON.parse(event.raw_json));
 
     const threadIds = new Set(
       extractNip10References(rawEvent).map((reference) => reference.id),
     );
 
-    return Array.isArray(parsed)
-      ? (parsed as NostrEvent[]).filter((context) => threadIds.has(context.id))
-      : [];
+    return parsed.filter((context) => threadIds.has(context.id));
   } catch {
     return [];
   }
@@ -958,6 +1010,7 @@ function nostrEmbeds({
       : [];
 
     embeds[reference.token] = {
+      entityKey: entityKey(referencedEvent?.id ?? reference.id),
       type: 'event',
       id: referencedEvent?.id ?? reference.id,
       pubkey: referencedEvent?.pubkey,
@@ -1019,13 +1072,23 @@ function nostrEmbeds({
   return embeds;
 }
 
-function threadContextReferences(
-  alias: string,
-  event: NrEvent,
-  profiles: Map<string, CachedProfile>,
-  interactions: NrInteraction[],
-  mode: NrListMode,
-) {
+type ThreadContextReferencesProps = {
+  alias: string;
+  event: NrEvent;
+  profiles: Map<string, CachedProfile>;
+  interactions: NrInteraction[];
+  localPreferences: Map<string, 'like' | 'dislike'>;
+  mode: NrListMode;
+};
+
+function threadContextReferences({
+  alias,
+  event,
+  profiles,
+  interactions,
+  localPreferences,
+  mode,
+}: ThreadContextReferencesProps) {
   const context = threadContextEvents(event);
 
   const relatedEvents = new Map(
@@ -1044,6 +1107,7 @@ function threadContextReferences(
     const flags = interactionFlags(interactions, contextEvent.id);
 
     return {
+      entityKey: entityKey(contextEvent.id),
       type: 'event' as const,
       id: contextEvent.id,
       pubkey: contextEvent.pubkey,
@@ -1085,6 +1149,12 @@ function threadContextReferences(
       reposted: flags.reposted,
       quoted: flags.quoted,
       showActions: true,
+      trailingActions: localPreferenceActions({
+        alias,
+        eventId: contextEvent.id,
+        mode,
+        preference: localPreferences.get(contextEvent.id) ?? null,
+      }),
       inlineProfiles: inlineProfiles(contextEvent.content, profiles),
       embeddedReferences: [
         ...extractEventReferences(contextEvent.content).flatMap((reference) => {
@@ -1148,9 +1218,12 @@ type EventNodeProps = {
   profiles: Map<string, CachedProfile>;
   showReplyContext: boolean;
   interactions: NrInteraction[] | null;
-  localPreference: 'like' | 'dislike' | null;
+  localPreferences: Map<string, 'like' | 'dislike'>;
+  authorPreferences: Map<string, NrAuthorPreferenceValue>;
+  sharePrefixes: NostrSharePrefixes;
   rankingScore: number | null;
   mode: NrListMode;
+  renderScope: string;
 };
 
 export function eventNode({
@@ -1159,12 +1232,23 @@ export function eventNode({
   profiles,
   showReplyContext,
   interactions,
-  localPreference,
+  localPreferences,
+  authorPreferences,
+  sharePrefixes,
   rankingScore,
   mode,
+  renderScope,
 }: EventNodeProps): WebNode {
   if (event.kind !== 1) {
-    return activityEventNode({ alias, event, profiles, mode });
+    return activityEventNode({
+      alias,
+      event,
+      profiles,
+      authorPreferences,
+      sharePrefixes,
+      mode,
+      renderScope,
+    });
   }
 
   const eventInteractions = interactions ?? [];
@@ -1177,8 +1261,10 @@ export function eventNode({
   return {
     type: 'element',
     tag: 'treeItem',
+    renderKey: `nr:${renderScope}:event:${event.id}`,
     props: {
       id: `nr-event-${event.id}`,
+      entityKey: entityKey(event.id),
       className: `nr-list-event${rankingScore === null ? '' : ' nr-for-you-event'}`,
       defaultExpanded: true,
       filterText,
@@ -1186,58 +1272,79 @@ export function eventNode({
       filterPath: `event/${event.id}`,
     },
     summary: el('row', { gap: 'xs', align: 'between', itemAlign: 'start' }, [
-      eventActionsMenu(alias, event, mode),
+      keyed(
+        `nr:${renderScope}:event:${event.id}:menu`,
+        eventActionsMenu(alias, event, mode, sharePrefixes),
+      ),
       el('stack', { gap: 'xs', fill: true }, [
         ...(rankingScore === null ? [] : [forYouMetadata(event, rankingScore)]),
-        el(
-          'nostrPost',
-          {
-            size: 'sm',
-            nostrEventId: post.id,
-            nostrPubkey: post.pubkey,
-            nostrNpub: npubForPubkey(post.pubkey),
-            nostrRelayHints: post.relayHints,
-            nostrAuthorName: post.authorName ?? undefined,
-            nostrAuthorUsername: post.authorUsername ?? undefined,
-            nostrAuthorPicture: post.authorPicture ?? undefined,
-            nostrAuthorAbout: post.authorAbout ?? undefined,
-            nostrCreatedAt: post.createdAt,
-            nostrContent: post.content,
-            nostrInlineProfiles: inlineProfiles(event.content, profiles),
-            nostrPermalink: nevent ? `nostr:${nevent}` : undefined,
-            nostrEmbeds: nostrEmbeds({
-              alias,
-              event,
-              profiles,
-              interactions: eventInteractions,
-              mode,
-            }),
-            nostrReplyContext: threadContextReferences(
-              alias,
-              event,
-              profiles,
-              eventInteractions,
-              mode,
-            ),
-            nostrShowReplyContext: showReplyContext,
-            nostrReadAction: readAction(alias, event.id, mode),
-            nostrTrailingActions: localPreferenceActions({
-              alias,
-              eventId: event.id,
-              mode,
-              preference: localPreference,
-            }),
-            nostrArchiveAction: archiveAction(alias, event, mode),
-            nostrArchived: event.archived_at !== null,
-            nostrLikeAction: likeEventAction(alias, event),
-            nostrReplyAction: replyEventAction({ alias, event, post }),
-            nostrRepostAction: repostEventAction({ alias, event, post }),
-            nostrLiked: flags.liked,
-            nostrReplied: flags.replied,
-            nostrReposted: flags.reposted,
-            nostrQuoted: flags.quoted,
-          },
-          [],
+        ...summaryNodes(event.summary),
+        keyed(
+          `nr:${renderScope}:event:${event.id}:post`,
+          el(
+            'nostrPost',
+            {
+              size: 'sm',
+              entityKey: entityKey(event.id),
+              nostrEventId: post.id,
+              nostrPubkey: post.pubkey,
+              nostrNpub: npubForPubkey(post.pubkey),
+              nostrRelayHints: post.relayHints,
+              nostrSharePrefixes: sharePrefixes,
+              nostrAuthorName: post.authorName ?? undefined,
+              nostrAuthorUsername: post.authorUsername ?? undefined,
+              nostrAuthorPicture: post.authorPicture ?? undefined,
+              nostrAuthorAbout: post.authorAbout ?? undefined,
+              nostrCreatedAt: post.createdAt,
+              nostrContent: post.content,
+              nostrInlineProfiles: inlineProfiles(event.content, profiles),
+              nostrPermalink: nevent ? `nostr:${nevent}` : undefined,
+              nostrEmbeds: nostrEmbeds({
+                alias,
+                event,
+                profiles,
+                interactions: eventInteractions,
+                mode,
+              }),
+              nostrReplyContext: threadContextReferences({
+                alias,
+                event,
+                profiles,
+                interactions: eventInteractions,
+                localPreferences,
+                mode,
+              }),
+              nostrShowReplyContext: showReplyContext,
+              nostrReadAction: readAction({
+                alias,
+                eventId: event.id,
+                mode,
+              }),
+              nostrTrailingActions: localPreferenceActions({
+                alias,
+                eventId: event.id,
+                mode,
+                preference: localPreferences.get(event.id) ?? null,
+              }),
+              nostrProfileActions: authorPreferenceActions({
+                alias,
+                pubkey: event.pubkey,
+                mode,
+                preference:
+                  authorPreferences.get(event.pubkey.toLowerCase()) ?? null,
+              }),
+              nostrArchiveAction: archiveAction(alias, event, mode),
+              nostrArchived: event.archived_at !== null,
+              nostrLikeAction: likeEventAction(alias, event),
+              nostrReplyAction: replyEventAction({ alias, event, post }),
+              nostrRepostAction: repostEventAction({ alias, event, post }),
+              nostrLiked: flags.liked,
+              nostrReplied: flags.replied,
+              nostrReposted: flags.reposted,
+              nostrQuoted: flags.quoted,
+            },
+            [],
+          ),
         ),
         ...(rankingScore === null
           ? [
@@ -1259,6 +1366,8 @@ type GroupNodeProps = {
   profiles: Map<string, CachedProfile>;
   interactions: NrInteraction[];
   localPreferences: Map<string, 'like' | 'dislike'>;
+  authorPreferences: Map<string, NrAuthorPreferenceValue>;
+  sharePrefixes: NostrSharePrefixes;
   mode: NrListMode;
 };
 
@@ -1288,20 +1397,27 @@ function mergedActivityNode({
   activities,
   profiles,
   localPreference,
+  authorPreference,
+  sharePrefixes,
   rankingEvent,
   rankingScore,
   mode,
+  renderScope,
 }: {
   alias: string;
   target: NostrEvent;
   activities: NrEvent[];
   profiles: Map<string, CachedProfile>;
   localPreference: 'like' | 'dislike' | null;
+  authorPreference: NrAuthorPreferenceValue | null;
+  sharePrefixes: NostrSharePrefixes;
   rankingEvent: NrEvent | null;
   rankingScore: number | null;
   mode: NrListMode;
+  renderScope: string;
 }): WebNode {
   const archived = activities.some((activity) => activity.archived_at !== null);
+  const summary = rankingEvent?.summary ?? activities[0]?.summary ?? '';
 
   const relatedEvents = new Map(
     activities
@@ -1365,22 +1481,29 @@ function mergedActivityNode({
   return {
     type: 'element',
     tag: 'treeItem',
+    renderKey: `nr:${renderScope}:activity:${target.id}`,
     props: {
       id: `nr-activity-${target.id}`,
+      entityKey: entityKey(target.id),
       className: `nr-list-event${rankingScore === null ? '' : ' nr-for-you-event'}`,
       defaultExpanded: true,
     },
     summary: el('row', { gap: 'xs', align: 'between', itemAlign: 'start' }, [
-      referencedEventActionsMenu({
-        alias,
-        event: target,
-        archived,
-        mode,
-      }),
+      keyed(
+        `nr:${renderScope}:activity:${target.id}:menu`,
+        referencedEventActionsMenu({
+          alias,
+          event: target,
+          archived,
+          mode,
+          sharePrefixes,
+        }),
+      ),
       el('stack', { fill: true }, [
         ...(rankingEvent && rankingScore !== null
           ? [forYouMetadata(rankingEvent, rankingScore)]
           : []),
+        ...summaryNodes(summary),
         profilePostNode({
           alias,
           event: target,
@@ -1390,7 +1513,10 @@ function mergedActivityNode({
           activityHeaders: headers,
           archived,
           localPreference,
+          authorPreference,
+          sharePrefixes,
           mode,
+          renderScope: `${renderScope}:activity:${target.id}`,
         }),
       ]),
     ]),
@@ -1404,16 +1530,22 @@ function groupEventNodes({
   profiles,
   interactions,
   localPreferences,
+  authorPreferences,
+  sharePrefixes,
   rankingScores,
   mode,
+  renderScope,
 }: {
   alias: string;
   events: NrEvent[];
   profiles: Map<string, CachedProfile>;
   interactions: NrInteraction[];
   localPreferences: Map<string, 'like' | 'dislike'>;
+  authorPreferences: Map<string, NrAuthorPreferenceValue>;
+  sharePrefixes: NostrSharePrefixes;
   rankingScores: Record<string, number> | null;
   mode: NrListMode;
+  renderScope: string;
 }): WebNode[] {
   const activitiesByTarget = new Map<
     string,
@@ -1466,9 +1598,13 @@ function groupEventNodes({
           activities: aggregate.activities,
           profiles,
           localPreference: localPreferences.get(target.id) ?? null,
+          authorPreference:
+            authorPreferences.get(target.pubkey.toLowerCase()) ?? null,
+          sharePrefixes,
           rankingEvent: rankingScores ? event : null,
           rankingScore: rankingScores?.[event.id] ?? null,
           mode,
+          renderScope,
         }),
       );
 
@@ -1491,9 +1627,13 @@ function groupEventNodes({
           activities: aggregate.activities,
           profiles,
           localPreference: localPreferences.get(event.id) ?? null,
+          authorPreference:
+            authorPreferences.get(event.pubkey.toLowerCase()) ?? null,
+          sharePrefixes,
           rankingEvent: rankingScores ? event : null,
           rankingScore: rankingScores?.[event.id] ?? null,
           mode,
+          renderScope,
         }),
       );
     } else {
@@ -1504,9 +1644,12 @@ function groupEventNodes({
           profiles,
           showReplyContext: mode === 'for-you',
           interactions,
-          localPreference: localPreferences.get(event.id) ?? null,
+          localPreferences,
+          authorPreferences,
+          sharePrefixes,
           rankingScore: rankingScores?.[event.id] ?? null,
           mode,
+          renderScope,
         }),
       );
     }
@@ -1521,11 +1664,14 @@ function groupNode({
   profiles,
   interactions,
   localPreferences,
+  authorPreferences,
+  sharePrefixes,
   mode,
 }: GroupNodeProps): WebNode {
   return {
     type: 'element',
     tag: 'treeItem',
+    renderKey: `nr:${mode}:group:${group.type}:${encodeURIComponent(group.tag)}`,
     props: {
       id: `nr-${group.type}-${group.tag}`,
       defaultExpanded: false,
@@ -1540,23 +1686,26 @@ function groupNode({
         el('text', { weight: 'semibold' }, [
           text(countLabel(group.tag, group.unreadCount)),
         ]),
-        el(
-          'overflowMenu',
-          {
-            label: '⋮',
-            buttonVariant: 'icon',
-            stopPropagation: true,
-          },
-          [
+        keyed(
+          `nr:${mode}:group:${group.type}:${encodeURIComponent(group.tag)}:menu`,
+          el(
+            'overflowMenu',
             {
-              type: 'element',
-              tag: 'menuItem',
-              props: {
-                label: 'Read all',
-                action: readTagAction(alias, group.type, group.tag, mode),
-              },
+              label: '⋮',
+              buttonVariant: 'icon',
+              stopPropagation: true,
             },
-          ],
+            [
+              {
+                type: 'element',
+                tag: 'menuItem',
+                props: {
+                  label: 'Read all',
+                  action: readTagAction(alias, group.type, group.tag, mode),
+                },
+              },
+            ],
+          ),
         ),
       ],
     ),
@@ -1566,8 +1715,11 @@ function groupNode({
       profiles,
       interactions,
       localPreferences,
+      authorPreferences,
+      sharePrefixes,
       rankingScores: null,
       mode,
+      renderScope: `${group.type}:${encodeURIComponent(group.tag)}`,
     }),
   };
 }
@@ -1580,6 +1732,8 @@ type SectionNodeProps = {
   profiles: Map<string, CachedProfile>;
   interactions: NrInteraction[];
   localPreferences: Map<string, 'like' | 'dislike'>;
+  authorPreferences: Map<string, NrAuthorPreferenceValue>;
+  sharePrefixes: NostrSharePrefixes;
   mode: NrListMode;
 };
 
@@ -1591,6 +1745,8 @@ function sectionNode({
   profiles,
   interactions,
   localPreferences,
+  authorPreferences,
+  sharePrefixes,
   mode,
 }: SectionNodeProps): WebNode {
   const sectionUnreadCount = groups.reduce(
@@ -1601,6 +1757,7 @@ function sectionNode({
   return {
     type: 'element',
     tag: 'treeItem',
+    renderKey: `nr:${mode}:section:${type}`,
     props: {
       id: `nr-section-${title.toLowerCase()}`,
       defaultExpanded: true,
@@ -1617,23 +1774,26 @@ function sectionNode({
           ]),
           badge(String(sectionUnreadCount)),
         ]),
-        el(
-          'overflowMenu',
-          {
-            label: '⋮',
-            buttonVariant: 'icon',
-            stopPropagation: true,
-          },
-          [
+        keyed(
+          `nr:${mode}:section:${type}:menu`,
+          el(
+            'overflowMenu',
             {
-              type: 'element',
-              tag: 'menuItem',
-              props: {
-                label: type === 'topic' ? 'Add a topic' : 'Add a mood',
-                action: taxonomyEditorAction(alias, type),
-              },
+              label: '⋮',
+              buttonVariant: 'icon',
+              stopPropagation: true,
             },
-          ],
+            [
+              {
+                type: 'element',
+                tag: 'menuItem',
+                props: {
+                  label: type === 'topic' ? 'Add a topic' : 'Add a mood',
+                  action: taxonomyEditorAction(alias, type),
+                },
+              },
+            ],
+          ),
         ),
       ],
     ),
@@ -1647,6 +1807,8 @@ function sectionNode({
               profiles,
               interactions,
               localPreferences,
+              authorPreferences,
+              sharePrefixes,
               mode,
             }),
           ),
@@ -1680,19 +1842,22 @@ function settingsAction(alias: string) {
 }
 
 function fetchProgressStatus(): WebNode {
-  return el('treeItem', { id: 'nr-fetch-progress', defaultExpanded: false }, [
-    el('text', { tone: 'muted', size: 'sm' }, [
-      text('Background fetch progress'),
+  return keyed(
+    'nr:timeline:fetch-progress',
+    el('treeItem', { id: 'nr-fetch-progress', defaultExpanded: false }, [
+      el('text', { tone: 'muted', size: 'sm' }, [
+        text('Background fetch progress'),
+      ]),
+      el(
+        'commandStatus',
+        {
+          id: NR_FETCH_STATUS_TARGET_ID,
+          className: 'nr-fetch-progress-status',
+        },
+        [],
+      ),
     ]),
-    el(
-      'commandStatus',
-      {
-        id: NR_FETCH_STATUS_TARGET_ID,
-        className: 'nr-fetch-progress-status',
-      },
-      [],
-    ),
-  ]);
+  );
 }
 
 function listModeAction(alias: string, mode: NrListMode) {
@@ -1722,48 +1887,54 @@ function listFilterPanel(
   mode: 'timeline' | 'profile',
   selected: NrFeedCategory[],
 ): WebNode {
-  return el(
-    'form',
-    {
-      className: 'web-form web-form--stacked nr-list-filter-panel',
-      revealId: NR_LIST_FILTER_REVEAL_ID,
-      hiddenUntilRevealed: true,
-      formOptionFieldNames: ['kinds'],
-      action: listFilterAction(alias, mode),
-    },
-    [
-      el('text', { weight: 'bold' }, [text('KINDS')]),
-      el(
-        'stack',
-        { className: 'nr-list-filter-options', gap: 'xs' },
-        NR_FEED_CATEGORIES.map((category) =>
-          el('row', { gap: 'xs', itemAlign: 'center' }, [
-            el(
-              'checkbox',
-              {
-                formFieldName: 'kinds',
-                value: category,
-                checked: selected.includes(category),
-                className: 'web-checkbox--retro',
-              },
-              [],
-            ),
-            text(NR_FEED_CATEGORY_LABELS[category]),
-          ]),
-        ),
-      ),
-      el('row', { className: 'web-form__actions', gap: 'sm' }, [
-        el('button', { label: 'Apply', htmlType: 'submit' }, []),
+  return keyed(
+    `nr:${mode}:filter-form`,
+    el(
+      'form',
+      {
+        className: 'web-form web-form--stacked nr-list-filter-panel',
+        revealId: NR_LIST_FILTER_REVEAL_ID,
+        hiddenUntilRevealed: true,
+        formOptionFieldNames: ['kinds'],
+        action: listFilterAction(alias, mode),
+      },
+      [
+        el('text', { weight: 'bold' }, [text('KINDS')]),
         el(
-          'button',
-          {
-            label: 'Close',
-            action: { type: 'hideReveal', targetId: NR_LIST_FILTER_REVEAL_ID },
-          },
-          [],
+          'stack',
+          { className: 'nr-list-filter-options', gap: 'xs' },
+          NR_FEED_CATEGORIES.map((category) =>
+            el('row', { gap: 'xs', itemAlign: 'center' }, [
+              el(
+                'checkbox',
+                {
+                  formFieldName: 'kinds',
+                  value: category,
+                  checked: selected.includes(category),
+                  className: 'web-checkbox--retro',
+                },
+                [],
+              ),
+              text(NR_FEED_CATEGORY_LABELS[category]),
+            ]),
+          ),
         ),
-      ]),
-    ],
+        el('row', { className: 'web-form__actions', gap: 'sm' }, [
+          el('button', { label: 'Apply', htmlType: 'submit' }, []),
+          el(
+            'button',
+            {
+              label: 'Close',
+              action: {
+                type: 'hideReveal',
+                targetId: NR_LIST_FILTER_REVEAL_ID,
+              },
+            },
+            [],
+          ),
+        ]),
+      ],
+    ),
   );
 }
 
@@ -1821,7 +1992,10 @@ function profilePostNode({
   activityHeaders,
   archived,
   localPreference,
+  authorPreference,
+  sharePrefixes,
   mode,
+  renderScope,
 }: {
   alias: string;
   event: NostrEvent;
@@ -1840,62 +2014,76 @@ function profilePostNode({
   }>;
   archived: boolean;
   localPreference: 'like' | 'dislike' | null | undefined;
+  authorPreference: NrAuthorPreferenceValue | null;
+  sharePrefixes: NostrSharePrefixes | null;
   mode: NrListMode;
+  renderScope: string;
 }): WebNode {
   const profile = profileForPubkey({ profiles, pubkey: event.pubkey });
 
-  return el(
-    'nostrPost',
-    {
-      size: 'sm',
-      nostrEventId: event.id,
-      nostrPubkey: event.pubkey,
-      nostrNpub: npubForPubkey(event.pubkey),
-      nostrAuthorName: profile?.displayName,
-      nostrAuthorUsername: profile?.name,
-      nostrAuthorPicture: profile?.picture,
-      nostrAuthorAbout: profile?.about,
-      nostrCreatedAt: event.created_at,
-      nostrContent: event.content,
-      nostrInlineProfiles: inlineProfiles(event.content, profiles),
-      nostrReplyContext: replyContext,
-      nostrShowReplyContext: replyContext.length > 0,
-      nostrEmbeds: embeds,
-      nostrReplyAction: replyNostrEventAction({ alias, event, profile }),
-      nostrLikeAction: likeNostrEventAction(alias, event),
-      nostrRepostAction: repostNostrEventAction({ alias, event, profile }),
-      ...(localPreference === undefined
-        ? {}
-        : {
-            nostrTrailingActions: localPreferenceActions({
-              alias,
-              eventId: event.id,
-              mode,
-              preference: localPreference,
+  return keyed(
+    `nr:${renderScope}:post:${event.id}`,
+    el(
+      'nostrPost',
+      {
+        size: 'sm',
+        entityKey: entityKey(event.id),
+        nostrEventId: event.id,
+        nostrPubkey: event.pubkey,
+        nostrNpub: npubForPubkey(event.pubkey),
+        nostrAuthorName: profile?.displayName,
+        nostrAuthorUsername: profile?.name,
+        nostrAuthorPicture: profile?.picture,
+        nostrAuthorAbout: profile?.about,
+        ...(sharePrefixes ? { nostrSharePrefixes: sharePrefixes } : {}),
+        nostrCreatedAt: event.created_at,
+        nostrContent: event.content,
+        nostrInlineProfiles: inlineProfiles(event.content, profiles),
+        nostrReplyContext: replyContext,
+        nostrShowReplyContext: replyContext.length > 0,
+        nostrEmbeds: embeds,
+        nostrReplyAction: replyNostrEventAction({ alias, event, profile }),
+        nostrLikeAction: likeNostrEventAction(alias, event),
+        nostrRepostAction: repostNostrEventAction({ alias, event, profile }),
+        ...(localPreference === undefined
+          ? {}
+          : {
+              nostrTrailingActions: localPreferenceActions({
+                alias,
+                eventId: event.id,
+                mode,
+                preference: localPreference,
+              }),
             }),
-          }),
-      ...(activityHeaders.length > 0
-        ? { nostrActivityHeaders: activityHeaders }
-        : {}),
-      ...(activityHeaders.length > 0
-        ? {
-            nostrReadAction: markRawEventAction({
-              alias,
-              event,
-              state: 'read',
-              mode,
-            }),
-            nostrArchiveAction: markRawEventAction({
-              alias,
-              event,
-              state: archived ? 'unarchived' : 'archived',
-              mode,
-            }),
-            nostrArchived: archived,
-          }
-        : {}),
-    },
-    [],
+        nostrProfileActions: authorPreferenceActions({
+          alias,
+          pubkey: event.pubkey,
+          mode,
+          preference: authorPreference,
+        }),
+        ...(activityHeaders.length > 0
+          ? { nostrActivityHeaders: activityHeaders }
+          : {}),
+        ...(activityHeaders.length > 0
+          ? {
+              nostrReadAction: markRawEventAction({
+                alias,
+                event,
+                state: 'read',
+                mode,
+              }),
+              nostrArchiveAction: markRawEventAction({
+                alias,
+                event,
+                state: archived ? 'unarchived' : 'archived',
+                mode,
+              }),
+              nostrArchived: archived,
+            }
+          : {}),
+      },
+      [],
+    ),
   );
 }
 
@@ -1934,6 +2122,7 @@ function profileReference({
   const profile = profileForPubkey({ profiles, pubkey: event.pubkey });
 
   return {
+    entityKey: entityKey(event.id),
     type: 'event' as const,
     id: event.id,
     pubkey: event.pubkey,
@@ -1991,12 +2180,18 @@ function profileEventNode({
   alias,
   profileEvent,
   profiles,
+  authorPreferences,
+  sharePrefixes,
   mode,
+  renderScope,
 }: {
   alias: string;
   profileEvent: NrProfileEvent;
   profiles: Map<string, CachedProfile>;
+  authorPreferences: Map<string, NrAuthorPreferenceValue>;
+  sharePrefixes: NostrSharePrefixes;
   mode: NrListMode;
+  renderScope: string;
 }): WebNode {
   const { event, referencedEvents } = profileEvent;
 
@@ -2076,6 +2271,7 @@ function profileEventNode({
   return {
     type: 'element',
     tag: 'treeItem',
+    renderKey: `nr:${renderScope}:source:${event.id}`,
     props: { id: `nr-profile-${event.id}`, defaultExpanded: true },
     summary: el('stack', { gap: 'xs', fill: true }, [
       ...(event.kind === 7
@@ -2089,7 +2285,11 @@ function profileEventNode({
               activityHeaders: activityHeader ? [activityHeader] : [],
               archived: false,
               localPreference: undefined,
+              authorPreference:
+                authorPreferences.get(reference.pubkey.toLowerCase()) ?? null,
+              sharePrefixes: null,
               mode,
+              renderScope: `${renderScope}:source:${event.id}:reference:${reference.id}`,
             }),
           )
         : [
@@ -2102,7 +2302,12 @@ function profileEventNode({
               activityHeaders: activityHeader ? [activityHeader] : [],
               archived: false,
               localPreference: undefined,
+              authorPreference:
+                authorPreferences.get(displayEvent.pubkey.toLowerCase()) ??
+                null,
+              sharePrefixes,
               mode,
+              renderScope: `${renderScope}:source:${event.id}`,
             }),
           ]),
     ]),
@@ -2114,12 +2319,18 @@ function activityEventNode({
   alias,
   event,
   profiles,
+  authorPreferences,
+  sharePrefixes,
   mode,
+  renderScope,
 }: {
   alias: string;
   event: NrEvent;
   profiles: Map<string, CachedProfile>;
+  authorPreferences: Map<string, NrAuthorPreferenceValue>;
+  sharePrefixes: NostrSharePrefixes;
   mode: NrListMode;
+  renderScope: string;
 }): WebNode {
   let rawEvent: NostrEvent;
 
@@ -2139,7 +2350,10 @@ function activityEventNode({
       ],
     },
     profiles,
+    authorPreferences,
+    sharePrefixes,
     mode,
+    renderScope,
   });
 }
 
@@ -2149,6 +2363,14 @@ export function renderNrListWeb({
   profiles,
 }: RenderNrListWebProps): WebNodeRoot {
   const localPreferences = new Map<string, 'like' | 'dislike'>();
+  const sharePrefixes = nrSharePrefixes(listData.settings);
+
+  const authorPreferences = new Map<string, NrAuthorPreferenceValue>(
+    listData.authorPreferences.map((preference) => [
+      preference.pubkey.toLowerCase(),
+      preference.preference,
+    ]),
+  );
 
   for (const signal of listData.interestSignals) {
     if (signal.source !== 'private') {
@@ -2170,107 +2392,121 @@ export function renderNrListWeb({
       subcommand: 'list',
     },
     stylesheets: [fetchCoverageStylesheet, nrListStylesheet],
-    tree: el('stack', { gap: 'sm' }, [
-      listModeSwitch(alias, listData.mode),
-      ...(listData.mode === 'timeline' || listData.mode === 'profile'
-        ? [listFilterPanel(alias, listData.mode, listData.selectedCategories)]
-        : []),
-      {
-        type: 'element',
-        tag: 'tree',
-        props: {
-          className: 'nr-list-tree',
-          gap: 'xs',
-          filterable: true,
-          filterPlaceholder: 'Filter tags, moods, posts',
-          toolbarActions: [
-            ...(listData.mode === 'timeline' || listData.mode === 'profile'
-              ? [
-                  {
-                    label: 'Filter kinds',
-                    icon: 'checklist' as const,
-                    action: {
-                      type: 'toggleReveal' as const,
-                      targetId: NR_LIST_FILTER_REVEAL_ID,
+    tree: keyed(
+      `nr:${listData.mode}:root`,
+      el('stack', { gap: 'sm' }, [
+        listModeSwitch(alias, listData.mode),
+        ...(listData.mode === 'timeline' || listData.mode === 'profile'
+          ? [listFilterPanel(alias, listData.mode, listData.selectedCategories)]
+          : []),
+        {
+          type: 'element',
+          tag: 'tree',
+          renderKey: `nr:${listData.mode}:tree`,
+          props: {
+            className: 'nr-list-tree',
+            gap: 'xs',
+            filterable: true,
+            filterPlaceholder: 'Filter tags, moods, posts',
+            toolbarActions: [
+              ...(listData.mode === 'timeline' || listData.mode === 'profile'
+                ? [
+                    {
+                      label: 'Filter kinds',
+                      icon: 'checklist' as const,
+                      action: {
+                        type: 'toggleReveal' as const,
+                        targetId: NR_LIST_FILTER_REVEAL_ID,
+                      },
                     },
-                  },
+                  ]
+                : []),
+              {
+                label: 'Settings',
+                icon: 'settings',
+                action: settingsAction(alias),
+                visibleOnSurfaces: ['timeline', 'modal', 'dock'],
+              },
+            ],
+          },
+          children: [
+            ...(listData.mode === 'timeline'
+              ? [
+                  fetchCoverageBar(alias, listData),
+                  fetchProgressStatus(),
+                  el('spacer', { size: 'md' }, []),
                 ]
               : []),
-            {
-              label: 'Settings',
-              icon: 'settings',
-              action: settingsAction(alias),
-              visibleOnSurfaces: ['timeline', 'modal', 'dock'],
-            },
+            ...(listData.mode === 'profile'
+              ? listData.profileEvents.length > 0
+                ? listData.profileEvents.map((profileEvent) =>
+                    profileEventNode({
+                      alias,
+                      profileEvent,
+                      profiles,
+                      authorPreferences,
+                      sharePrefixes,
+                      mode: 'profile',
+                      renderScope: 'profile',
+                    }),
+                  )
+                : [
+                    el('text', { tone: 'muted' }, [
+                      text('No matching profile events found.'),
+                    ]),
+                  ]
+              : []),
+            ...(listData.mode === 'for-you'
+              ? listData.forYouEvents.length > 0
+                ? groupEventNodes({
+                    alias,
+                    events: listData.forYouEvents,
+                    profiles,
+                    interactions: listData.interactions,
+                    localPreferences,
+                    authorPreferences,
+                    sharePrefixes,
+                    rankingScores: listData.forYouScores,
+                    mode: 'for-you',
+                    renderScope: 'for-you',
+                  })
+                : [
+                    el('text', { tone: 'muted' }, [
+                      text('No unread Timeline events found.'),
+                    ]),
+                  ]
+              : []),
+            ...(listData.mode === 'profile' || listData.mode === 'for-you'
+              ? []
+              : [
+                  sectionNode({
+                    alias,
+                    title: 'Topics',
+                    type: 'topic',
+                    groups: listData.topicGroups,
+                    profiles,
+                    interactions: listData.interactions,
+                    localPreferences,
+                    authorPreferences,
+                    sharePrefixes,
+                    mode: listData.mode,
+                  }),
+                  sectionNode({
+                    alias,
+                    title: 'Moods',
+                    type: 'mood',
+                    groups: listData.moodGroups,
+                    profiles,
+                    interactions: listData.interactions,
+                    localPreferences,
+                    authorPreferences,
+                    sharePrefixes,
+                    mode: listData.mode,
+                  }),
+                ]),
           ],
         },
-        children: [
-          ...(listData.mode === 'timeline'
-            ? [
-                fetchCoverageBar(alias, listData),
-                fetchProgressStatus(),
-                el('spacer', { size: 'md' }, []),
-              ]
-            : []),
-          ...(listData.mode === 'profile'
-            ? listData.profileEvents.length > 0
-              ? listData.profileEvents.map((profileEvent) =>
-                  profileEventNode({
-                    alias,
-                    profileEvent,
-                    profiles,
-                    mode: 'profile',
-                  }),
-                )
-              : [
-                  el('text', { tone: 'muted' }, [
-                    text('No matching profile events found.'),
-                  ]),
-                ]
-            : []),
-          ...(listData.mode === 'for-you'
-            ? listData.forYouEvents.length > 0
-              ? groupEventNodes({
-                  alias,
-                  events: listData.forYouEvents,
-                  profiles,
-                  interactions: listData.interactions,
-                  localPreferences,
-                  rankingScores: listData.forYouScores,
-                  mode: 'for-you',
-                })
-              : [
-                  el('text', { tone: 'muted' }, [
-                    text('No unread Timeline events found.'),
-                  ]),
-                ]
-            : []),
-          ...(listData.mode === 'profile' || listData.mode === 'for-you'
-            ? []
-            : [
-                sectionNode({
-                  alias,
-                  title: 'Topics',
-                  type: 'topic',
-                  groups: listData.topicGroups,
-                  profiles,
-                  interactions: listData.interactions,
-                  localPreferences,
-                  mode: listData.mode,
-                }),
-                sectionNode({
-                  alias,
-                  title: 'Moods',
-                  type: 'mood',
-                  groups: listData.moodGroups,
-                  profiles,
-                  interactions: listData.interactions,
-                  localPreferences,
-                  mode: listData.mode,
-                }),
-              ]),
-        ],
-      },
-    ]),
+      ]),
+    ),
   };
 }
