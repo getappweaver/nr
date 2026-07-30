@@ -12,6 +12,7 @@ import {
   seedStoredNrEvents,
 } from '../../nostr-resolution';
 import { extractProfileReferences } from '../../references';
+import { getNrSchedulerResource } from '../../settings';
 import type { NrCommandAdapterParams } from '../../types/adapter-params';
 
 import type { NrEvent, NrListData, NrListMode } from '../shared/types';
@@ -21,6 +22,27 @@ import { handleListCommand } from './handler';
 import { fetchNrProfileEvents } from './profile-events';
 import { renderNrListText } from './renderers/text';
 import { renderNrListWeb } from './renderers/web';
+
+type MeasureListStepProps<T> = {
+  params: NrCommandAdapterParams;
+  name: string;
+  run: () => T | Promise<T>;
+};
+
+async function measureListStep<T>({
+  params,
+  name,
+  run,
+}: MeasureListStepProps<T>): Promise<T> {
+  return params.storedCtx.monitoring.currentContext()
+    ? params.storedCtx.monitoring.withSpan({
+        name,
+        attributes: {},
+        parent: null,
+        run,
+      })
+    : run();
+}
 
 function collectProfilePubkeys(listData: NrListData): string[] {
   const events: NrEvent[] = [
@@ -69,7 +91,7 @@ function collectProfilePubkeys(listData: NrListData): string[] {
   ];
 }
 
-export async function adaptListCommand(
+async function runListCommand(
   params: NrCommandAdapterParams,
 ): Promise<string | WebNodeRoot> {
   void params.command;
@@ -89,7 +111,11 @@ export async function adaptListCommand(
 
   const rawKinds = params.parsed.options.kinds;
 
-  if ((mode === 'timeline' || mode === 'profile') && rawKinds !== undefined) {
+  const localMutation =
+    params.parsed.options.local_mutation === true ||
+    params.parsed.options.local_mutation === 'true';
+
+  if (mode !== 'archive' && rawKinds !== undefined) {
     saveNrListFilter({
       db: params.db,
       mode,
@@ -97,7 +123,11 @@ export async function adaptListCommand(
     });
   }
 
-  const listData = handleListCommand({ db: params.db, mode });
+  const listData = await measureListStep({
+    params,
+    name: 'nr.list.db',
+    run: () => handleListCommand({ db: params.db, mode }),
+  });
 
   const storedEvents = [
     ...listData.topicGroups.flatMap((group) => group.events),
@@ -106,15 +136,29 @@ export async function adaptListCommand(
     ...listData.activityEvents,
   ];
 
-  await seedStoredNrEvents({
-    service: params.storedCtx.nostrResolution,
-    events: storedEvents,
-  });
+  if (!localMutation) {
+    await measureListStep({
+      params,
+      name: 'nr.list.seed',
+      run: () =>
+        seedStoredNrEvents({
+          service: params.storedCtx.nostrResolution,
+          events: storedEvents,
+          monitoring: params.storedCtx.monitoring,
+        }),
+    });
+  }
 
-  await hydrateStoredNrEvents({
-    service: params.storedCtx.nostrResolution,
-    events: storedEvents,
-    contextRelays: parseRelayUrls(process.env.BOT_RELAYS ?? ''),
+  await measureListStep({
+    params,
+    name: 'nr.list.hydrate',
+    run: () =>
+      hydrateStoredNrEvents({
+        service: params.storedCtx.nostrResolution,
+        events: storedEvents,
+        contextRelays: parseRelayUrls(process.env.BOT_RELAYS ?? ''),
+        monitoring: params.storedCtx.monitoring,
+      }),
   });
 
   if (mode === 'profile') {
@@ -137,15 +181,55 @@ export async function adaptListCommand(
   }
 
   if (params.source === 'web') {
-    return renderNrListWeb({
-      alias: params.alias,
-      listData,
-      profiles: await params.storedCtx.wot.getProfiles({
-        pubkeys: collectProfilePubkeys(listData),
-        waitForMissing: false,
-      }),
+    const profilePubkeys = await measureListStep({
+      params,
+      name: 'nr.list.profile-keys',
+      run: () => collectProfilePubkeys(listData),
+    });
+
+    const profiles = await measureListStep({
+      params,
+      name: 'nr.list.profiles',
+      run: () =>
+        params.storedCtx.wot.getProfiles({
+          pubkeys: profilePubkeys,
+          waitForMissing: false,
+          refreshCached: !localMutation,
+        }),
+    });
+
+    return measureListStep({
+      params,
+      name: 'nr.list.web-build',
+      run: () =>
+        renderNrListWeb({
+          alias: params.alias,
+          listData,
+          schedulerResource: getNrSchedulerResource(params.db),
+          profiles,
+        }),
     });
   }
 
   return renderNrListText({ listData });
+}
+
+export async function adaptListCommand(
+  params: NrCommandAdapterParams,
+): Promise<string | WebNodeRoot> {
+  const monitor = params.storedCtx.monitoring;
+
+  if (monitor.currentContext() || !monitor.isEnabled()) {
+    return runListCommand(params);
+  }
+
+  return monitor.withSpan({
+    name: 'nr.list',
+    attributes: {
+      source: params.source,
+      mode: String(params.parsed.options.mode ?? 'timeline'),
+    },
+    parent: null,
+    run: () => runListCommand(params),
+  });
 }

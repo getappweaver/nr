@@ -139,17 +139,34 @@ export function adaptTaxonomyCommand(
 
   const mode = stringValue(params.parsed.options.mode) ?? 'edit';
 
-  if (mode !== 'edit' && mode !== 'save') {
-    return 'Taxonomy mode must be edit or save.';
+  if (mode !== 'edit' && mode !== 'save' && mode !== 'add') {
+    return 'Taxonomy mode must be edit, save, or add.';
   }
 
-  if (mode === 'save') {
+  if (mode === 'save' || mode === 'add') {
+    const newTag = stringValue(params.parsed.options.new_tag);
+
+    const activeTags =
+      mode === 'add'
+        ? listActiveNrTaxonomyTerms({ db: params.db, type }).map(
+            (term) => term.tag,
+          )
+        : stringArrayValue(params.parsed.options.active_tags);
+
+    if (mode === 'add' && !newTag) {
+      return `Usage: ${params.prefix}${params.alias} taxonomy --type <topic|mood> --mode add --new-tag <tag>`;
+    }
+
     syncNrTaxonomyTerms({
       db: params.db,
       type,
-      activeTags: stringArrayValue(params.parsed.options.active_tags),
-      newTag: stringValue(params.parsed.options.new_tag),
+      activeTags,
+      newTag,
     });
+
+    if (mode === 'add') {
+      return `Added ${newTag} to preferred ${type}s.`;
+    }
   }
 
   const terms = listActiveNrTaxonomyTerms({ db: params.db, type }).map(

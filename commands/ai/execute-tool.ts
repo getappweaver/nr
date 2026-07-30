@@ -1,0 +1,134 @@
+import type { Database } from 'bun:sqlite';
+import type { SimplePool } from 'nostr-tools/pool';
+import { getPublicKey } from 'nostr-tools/pure';
+import { hexToBytes } from 'nostr-tools/utils';
+
+import {
+  capabilityRegistry,
+  createCapabilityClient,
+} from '@src/core/capabilities/registry';
+import { monitoring } from '@src/core/monitoring';
+import {
+  getAgentBackend,
+  getCurrentOrDefaultMode,
+  getModelOverride,
+  getProviderName,
+  getRoutstrSkKey,
+  getWorkspaceTarget,
+  initSkKeyEncryption,
+  openCoreDb,
+} from '@src/db';
+import { loadBotConfig } from '@src/env';
+import { openNostrCacheDb } from '@src/nostr/cache/db';
+import { PROFILE_RELAYS_FOR_QUERY } from '@src/nostr/nip65';
+import {
+  allowRelayOperation,
+  filterBlockedReadRelays,
+  installRelayNoticeTracking,
+} from '@src/nostr/relay-notices';
+import { createNostrResolutionService } from '@src/nostr/resolution-service';
+import { createWotServices } from '@src/nostr/wot-service';
+
+import { fetchEvaluate } from '../fetch-latest/adapter';
+
+import type { NrToolCall } from './schemas';
+
+type ExecuteToolProps = {
+  call: NrToolCall;
+  db: Database;
+  pool: SimplePool;
+  masterPubkey: string;
+};
+
+const HOUR_SECONDS = 60 * 60;
+
+export async function executeTool({
+  call,
+  db,
+  pool,
+  masterPubkey,
+}: ExecuteToolProps): Promise<string> {
+  void call.window;
+
+  const config = loadBotConfig();
+  const coreDb = openCoreDb();
+
+  const botPubkey =
+    config.botPubkey ?? getPublicKey(hexToBytes(config.botKeyHex));
+
+  initSkKeyEncryption(config.botKeyHex, botPubkey);
+  pool.allowConnectingToRelay = allowRelayOperation;
+  installRelayNoticeTracking(pool);
+
+  const nostrCacheDb = openNostrCacheDb();
+
+  const nostrResolutionRuntime = createNostrResolutionService({
+    db: nostrCacheDb,
+    pool,
+    nowMs: Date.now,
+    filterReadRelays: filterBlockedReadRelays,
+    profileRelays: PROFILE_RELAYS_FOR_QUERY,
+    closeDbOnShutdown: false,
+  });
+
+  try {
+    const backend = getAgentBackend(coreDb);
+
+    const until =
+      Math.floor(Math.floor(Date.now() / 1000) / HOUR_SECONDS) * HOUR_SECONDS;
+
+    const since = until - HOUR_SECONDS;
+
+    return await fetchEvaluate({
+      params: {
+        db,
+        source: 'local',
+        runAgent: null,
+        sendReply: null,
+        storedCtx: {
+          pool,
+          masterPubkey,
+          wot: createWotServices({
+            db: coreDb,
+            nostrResolution: nostrResolutionRuntime.service,
+            rootPubkey: masterPubkey,
+            fallbackRelays: config.botRelayUrls,
+          }),
+          nostrResolution: nostrResolutionRuntime.service,
+          defaults: {
+            backend,
+            provider: getProviderName(coreDb),
+            model: getModelOverride(coreDb, backend),
+            mode: getCurrentOrDefaultMode(coreDb),
+            workspace_target: getWorkspaceTarget(coreDb),
+          },
+          getRoutstrSkKey: () => getRoutstrSkKey(coreDb),
+          getAvailableModels: async () => [],
+          capabilities: createCapabilityClient({
+            registry: capabilityRegistry,
+            caller: {
+              type: 'plugin',
+              pluginName: 'appweaver-nr-plugin',
+              alias: 'nr',
+            },
+          }),
+          monitoring,
+        },
+      },
+      peopleLimit: null,
+      sinceHours: 1,
+      explicitSince: since,
+      explicitUntil: until,
+      limit: 50,
+      oneOffInstructions: null,
+      waitForRelayListRefresh: true,
+    });
+  } finally {
+    try {
+      await nostrResolutionRuntime.shutdown();
+    } finally {
+      nostrCacheDb.close();
+      coreDb.close();
+    }
+  }
+}

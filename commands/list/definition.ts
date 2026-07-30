@@ -21,7 +21,7 @@ export const listDefinition = (
     {
       name: 'kinds',
       flag: '--kinds',
-      summary: 'Visible event categories for Timeline or Profile.',
+      summary: 'Visible event categories for Timeline, For You, or Profile.',
       kind: 'string',
       multiple: true,
       choices: [
@@ -33,8 +33,16 @@ export const listDefinition = (
         'reactions',
       ],
     },
+    {
+      name: 'local_mutation',
+      flag: '--local-mutation',
+      summary: 'Internal cached refresh after a local NR mutation.',
+      kind: 'boolean',
+      required: false,
+    },
   ],
   examples: [`${prefix}${alias} list`, `${prefix}${alias} list --mode archive`],
+  monitoring: { name: 'nr.list', attributes: {} },
   webWidget: {
     placement: 'right',
     surface: 'timeline_singleton',

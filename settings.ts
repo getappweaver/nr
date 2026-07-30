@@ -1,5 +1,9 @@
 import type { Database } from 'bun:sqlite';
 
+import {
+  CapabilityResourceRefSchema,
+  type CapabilityResourceRef,
+} from '@src/capabilities/types';
 import type { AgentBackendName } from '@src/db';
 import type { NostrSharePrefixes } from '@src/web/nostr-share';
 
@@ -9,6 +13,7 @@ export type NrSettings = {
   instructions: string;
   eventSharePrefix: string;
   profileSharePrefix: string;
+  translationTargetLanguage: string | null;
   relayFetchConcurrency: number;
   aiEvaluationConcurrency: number;
 };
@@ -33,14 +38,16 @@ Return ONLY JSON with this shape:
 }
 
 Guidelines:
-- Use lowercase, compact tags.
-- Topics describe what the event is about.
+- Use lowercase, compact, hyphenated tags.
+- Treat topics as search/index keywords that identify the concrete subjects of the event.
 - Moods describe tone or intent.
-- Reuse existing topic and mood tags from the context when they match.
-- Consolidate similar concepts into the existing tags instead of creating near-duplicates.
+- Make the topics cover the same concrete details captured by the summary.
+- Treat the existing taxonomy as suggestions, not a closed vocabulary. Reuse a tag only when it is an exact semantic match.
 - Prefer 2-5 topics and 1-3 moods when the event has enough detail.
-- Include specific, durable topic tags for named organizations, people, legislation, protocols, products, assets, and concrete subtopics when central to the event. Use lowercase hyphenated forms, such as "blackrock", "clarity-act", and "bitcoin-price".
-- Keep a useful broad topic alongside specific tags when relevant, such as "bitcoin" with "bitcoin-price". Do not use generic labels such as "informative" as topics.
+- Keep one useful broad anchor when relevant, then add specific keywords for the central entities, concepts, and relationships.
+- Include named organizations, people, legislation, protocols, products, projects, assets, releases, locations, events, and concrete subtopics when central to the event. Examples include "ditto", "opus-5", "shakespeare", "nip-55", and "clarity-act".
+- Prefer meaningful compound keywords when they express the actual focus or relationship, such as "bitcoin-chain-split", "bitcoin-podcast", "bitcoin-governance", "india-protests", "github-india", "nostr-troubleshooting", and "nostr-podcast".
+- Prefer varied, specific vocabulary over repeatedly falling back to a small set of broad categories. Do not use "informative", "technical", "casual", "personal", "social", or "general" as topics when concrete keywords are available.
 - Use moods only for an expressed tone or intent, not content type. For example, do not use "informative" as a mood.
 - If unsure, use topic "general" and mood "neutral".
 - Set "skip": true only when the event is not useful for this user's unread radar, only if the user is defined that below.
@@ -54,9 +61,12 @@ const SETTINGS_KEYS = {
   instructions: 'instructions',
   eventSharePrefix: 'event_share_prefix',
   profileSharePrefix: 'profile_share_prefix',
+  translationTargetLanguage: 'translation_target_language',
   relayFetchConcurrency: 'relay_fetch_concurrency',
   aiEvaluationConcurrency: 'ai_evaluation_concurrency',
 } as const;
+
+const SCHEDULER_RESOURCE_KEY = 'scheduler_resource';
 
 export function createNrSettingsTable(db: Database): void {
   db.run(`
@@ -134,6 +144,10 @@ export function getNrSettings(db: Database): NrSettings {
     profileSharePrefix: sharePrefix(
       getSetting(db, SETTINGS_KEYS.profileSharePrefix),
     ),
+    translationTargetLanguage: getSetting(
+      db,
+      SETTINGS_KEYS.translationTargetLanguage,
+    ),
     relayFetchConcurrency: relayFetchConcurrency(
       getSetting(db, SETTINGS_KEYS.relayFetchConcurrency),
     ),
@@ -150,6 +164,7 @@ type SaveNrSettingsProps = {
   instructions: string | null;
   eventSharePrefix: string;
   profileSharePrefix: string;
+  translationTargetLanguage: string | null;
   relayFetchConcurrency: number;
   aiEvaluationConcurrency: number;
 };
@@ -161,6 +176,7 @@ export function saveNrSettings({
   instructions,
   eventSharePrefix,
   profileSharePrefix,
+  translationTargetLanguage,
   relayFetchConcurrency,
   aiEvaluationConcurrency,
 }: SaveNrSettingsProps): NrSettings {
@@ -185,6 +201,19 @@ export function saveNrSettings({
   setSetting(db, SETTINGS_KEYS.eventSharePrefix, eventSharePrefix.trim());
   setSetting(db, SETTINGS_KEYS.profileSharePrefix, profileSharePrefix.trim());
 
+  if (
+    translationTargetLanguage === null ||
+    translationTargetLanguage.trim().length === 0
+  ) {
+    deleteSetting(db, SETTINGS_KEYS.translationTargetLanguage);
+  } else {
+    setSetting(
+      db,
+      SETTINGS_KEYS.translationTargetLanguage,
+      translationTargetLanguage.trim(),
+    );
+  }
+
   setSetting(
     db,
     SETTINGS_KEYS.relayFetchConcurrency,
@@ -206,8 +235,34 @@ export function resetNrSettings(db: Database): NrSettings {
   deleteSetting(db, SETTINGS_KEYS.instructions);
   deleteSetting(db, SETTINGS_KEYS.eventSharePrefix);
   deleteSetting(db, SETTINGS_KEYS.profileSharePrefix);
+  deleteSetting(db, SETTINGS_KEYS.translationTargetLanguage);
   deleteSetting(db, SETTINGS_KEYS.relayFetchConcurrency);
   deleteSetting(db, SETTINGS_KEYS.aiEvaluationConcurrency);
 
   return getNrSettings(db);
+}
+
+export function getNrSchedulerResource(
+  db: Database,
+): CapabilityResourceRef | null {
+  const raw = getSetting(db, SCHEDULER_RESOURCE_KEY);
+
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = CapabilityResourceRefSchema.safeParse(JSON.parse(raw));
+
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveNrSchedulerResource(
+  db: Database,
+  resource: CapabilityResourceRef,
+): void {
+  setSetting(db, SCHEDULER_RESOURCE_KEY, JSON.stringify(resource));
 }

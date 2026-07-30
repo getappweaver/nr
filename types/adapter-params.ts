@@ -11,6 +11,19 @@ import type { ParsedCliInvocation } from '@src/system/parser-cli';
 
 import type { getNrCommandDefinition } from '../commands/help/module';
 
+export type NrRuntimeContext = Pick<
+  PluginContext,
+  | 'pool'
+  | 'masterPubkey'
+  | 'wot'
+  | 'nostrResolution'
+  | 'defaults'
+  | 'getRoutstrSkKey'
+  | 'getAvailableModels'
+  | 'capabilities'
+  | 'monitoring'
+>;
+
 export type NrCommandAdapterParams = {
   prefix: string;
   alias: string;
@@ -21,5 +34,5 @@ export type NrCommandAdapterParams = {
   identity: PluginIdentity;
   runAgent: RunAgentFn | null;
   sendReply: SendReplyFn | null;
-  storedCtx: PluginContext;
+  storedCtx: NrRuntimeContext;
 };

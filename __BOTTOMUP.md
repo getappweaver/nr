@@ -1,68 +1,69 @@
 ---
 scope_root: true
-direct_hash: 45bc58af9bdcd8d146cd6c276ff2036bba6a661ca818a1d6c48147c4c109b731
-subtree_hash: 4d3772c06f3ec3bc5b77a9e8fea67918ce9da6b23e82e6033887a0046d61ea6a
+direct_hash: 8b447589dd404d9cce5c06d5193115f9cca8cce76d0fba775ce5ed85f0ea70e6
+subtree_hash: 666d832bbf221ba01a5d50c069bc7b8e8c9fae401ff9922ce3c039a7636e29ce
 enriched: true
 enriched_version: 1
 files:
   .gitignore: 8a435b8af578ee94d524a3ebcde2625b68fece422bca596270b07179a4e2698b
-  adapter.ts: 46648a30ab1cf9bb0fcee505d9e92f5498f87a37d8d40ccbb48c326aba3b7cec
+  adapter.ts: c4a923e00339ded99806c5dd8b7002669f04770e411efba5c3cdcaaa05c7652c
   AGENTS.md: 9e018327842afd60ac441abc12e615113f6496b91b3f85348bb29ff41681e7da
-  CHANGELOG.md: 5480bef488021ffae0374592a9f8f32c77e775b420c7907a277461518e28dc9c
-  classifier-ai.ts: 09a7342b024e5ecc85726ca9b4621a7d00b7d0a6c782dd101b4ca3b585ec903c
+  ai.ts: 5cfde82bd977d068de4197f6bd155803d8a98470fd2680d6a7037d38f2003d16
+  CHANGELOG.md: 39b03886a22f93e6cd494f00f3a2dddb3569aee9db564defa246457bb53ec32b
+  classifier-ai.ts: f050fedc01cc76261c12a909b2f594b17a0db3849149ceb660a146423981035e
   classifier.ts: eb81ebb0250b403f4a4313bc5233fc77852bbd66bc70a462ca56f6e91974f33a
   context.ts: 147555683dabd05ab45b5cb16f36dbd928099496bf5e355865822eb0e9f648bf
   db.test.ts: 18a77f2e541a79e5594808122d744596e559cff8813dee0567b48625f168d831
-  db.ts: 7300dc2bfd96a75f8ab6aac43b5c3155d90f5984797e93c2bdf5a06b9c92a62f
+  db.ts: 5e07c3e19ae9b48e609295016b5dcacecb64e361103d149723241f823b30b564
   definition.ts: 9de831be22db45afdae73fb859a4c0c5cd49b37a2566c319a48d4d4c13767ee8
   format.ts: 568aa9eaf9bba5e166d2882833e1e4d7b507436883b11b4fb88c9d5567de826b
-  init.ts: 48a8bc2378322dc7e1c6db86e9aff0c0df2a98200ac84a956b6d4a4ff7525ca0
+  init.ts: cce8038f25dd558c4fbcee2e8734d5d40c8b9a40dd333b0fc378d4e17e9ff91c
   LICENSE: 6b0382b16279f26ff69014300541967a356a666eb0b91b422f6862f6b7dad17e
-  nostr-resolution.test.ts: 3ffc77d1fe9d56d48d8a207d9546c3b19811d21c5ba9ebe42769f795fa3dae2f
   nostr-resolution.ts: 4dc980739b380505d348245cce0e9d387783bcb6a6b4940986583b6a1bfb95b9
-  package.json: 30c3e23cc728e5a09e70ac72b9ee0ecf1c6044f9f9fd5137c9593823106798f6
+  package.json: e919c525b2b3496ee624c00c1c7bb0ee9d1209362062dc7f29856e7bf08dc0c0
   README.md: d9a97586bde47aea7be9e18ff9d5a0bb7b02d2cb09f0f72b5c4a997db2b7e41a
   references.ts: c59eee5d911844aefd87dfb4f2fcc2306c639a60c48c066f00cc3b354230700d
   settings.ts: 5b18fd7c126b100f243776c1edc5208b8888f84036f9361dd4a3d567960c8722
   thread-context.ts: 230eb075858b79df99c5c7f23537e82fce151b102755570ef0842288fc3b95c9
 children:
-  commands: 8bea30a43c105a2fc0f26da9b4ee4da4cbaef7d1763fc9ef6f28060ffd48674f
-  scripts: 5d7f584a68316d0a8e26045f72d3b62b84676b7d2fe3bf0236c504b381df81fd
-  types: 28780babe49a737a5a25950c98115c6748a9c05444710d8a47a26ae4efa728d7
+  commands: a8658b81e05b14a368cb158a80e299ea98dcef70c4b2d023658f4352ef630065
+  scripts: c90c45841e9ab158ae1c0646eaa3a0274fa6328121f88ff038a29205f6c2dacd
+  types: 7604bd9621fb462f1312457aa0cf56784ecbd55a15184f148a95a2ecdb09f693
 ---
 
 # nr
 
 ## Purpose
-Nostr Radar is an AppWeaver plugin that fetches, stores, classifies, and presents Nostr activity as an intentional reader. Its root wires plugin lifecycle and commands to SQLite persistence, AI/heuristic classification, event-context resolution, and settings.
+Nostr Radar is an AppWeaver plugin for fetching, classifying, storing, and reviewing Nostr activity. Its root wires the plugin, command dispatch, SQLite persistence, AI classification, and shared Nostr-context resolution.
 
 ## Files
-- `.gitignore` - Excludes local SQLite databases, WAL files, and backups.
-- `adapter.ts` - Parses Nr command input and dispatches validated subcommands to their adapters.
-- `AGENTS.md` - Plugin publishing and local documentation maintenance instructions.
-- `CHANGELOG.md` - Versioned release history for the Nr plugin.
-- `classifier-ai.ts` - Runs configured AI backends to classify events with taxonomy and conversation context, falling back to heuristics on failure.
-- `classifier.ts` - Provides heuristic event classification plus AI prompt construction and response parsing.
-- `context.ts` - Builds taxonomy and tag-usage context supplied to the classifier.
-- `db.test.ts` - Tests persistence behavior for cached events, classifications, state, and shared-cache seeding.
-- `db.ts` - Owns Nr SQLite schema, event ingestion, classifications, feeds, preferences, fetch tracking, and evaluation queue operations.
-- `definition.ts` - Defines the Nr command and its supported subcommands for the shared command system.
-- `format.ts` - Formats cached events, grouped feeds, and event details as text responses.
-- `init.ts` - Exports and initializes the Nr AppWeaver plugin, database, command handler, and help text.
-- `LICENSE` - Unlicense public-domain dedication and warranty disclaimer.
-- `nostr-resolution.test.ts` - Tests shared event-cache seeding and referenced-context graph hydration helpers.
-- `nostr-resolution.ts` - Seeds shared event caches and resolves compact stored context through the Nostr resolution service.
-- `package.json` - Declares the Nostr Radar plugin package metadata and maintenance scripts.
-- `README.md` - Placeholder plugin documentation outlining expected command, storage, draft, and CLI coverage.
-- `references.ts` - Extracts NIP-19 note, profile, and address references and fetches referenced events from relays.
-- `settings.ts` - Defines persisted classification, sharing, and concurrency settings with defaults.
-- `thread-context.ts` - Extracts NIP-10 thread references and fetches their context events from relays.
+- `.gitignore` - Excludes the plugin’s SQLite database, WAL files, and backups.
+- `adapter.ts` - Parses `/nr` CLI or web payloads and dispatches supported subcommands to their adapters.
+- `AGENTS.md` - Records plugin publishing steps and the requirement to maintain local bottom-up documentation.
+- `ai.ts` - Exposes the Nostr Radar AI tool definition, database opener, execution bridge, and agent instructions.
+- `CHANGELOG.md` - Lists tagged Nostr Radar release changes.
+- `classifier-ai.ts` - Runs configured agent-backed event classification with contextual references, reactions, and heuristic fallback.
+- `classifier.ts` - Provides heuristic classification plus prompt construction and resilient parsing for AI classification results.
+- `context.ts` - Builds taxonomy and existing-tag context text for classification prompts.
+- `db.test.ts` - Covers event storage behavior around shared-cache seeding, classification reuse, and read/archive preservation.
+- `db.ts` - Owns the plugin SQLite schema and persistence APIs for events, classification, fetching, preferences, taxonomy, and feeds.
+- `definition.ts` - Defines the structured `/nr` command and its available subcommands.
+- `format.ts` - Formats Nostr Radar lists and event details for text responses.
+- `init.ts` - Registers and initializes the Nostr Radar plugin, command handler, help text, database, and AI definition.
+- `LICENSE` - Places the plugin in the public domain under the Unlicense.
+- `nostr-resolution.ts` - Seeds and hydrates Nostr events through the shared resolution service and traverses resolved reference graphs.
+- `package.json` - Declares plugin metadata, compatibility requirements, and maintenance scripts.
+- `README.md` - Template placeholder for user-facing plugin documentation.
+- `references.ts` - Extracts Nostr event, profile, and address references from content and fetches referenced events.
+- `settings.ts` - Defines persisted classification, sharing, and concurrency settings with their defaults.
+- `thread-context.ts` - Extracts NIP-10 thread references and fetches their context events.
 
 ## Notes
-- Plugin data is stored locally in db.sqlite.
-- Commands support both CLI-style and structured web input.
+- Plugin data is stored in a local SQLite database.
+- The `/nr` command surface is defined through subcommand modules.
+- Classification can use heuristic fallback or the configured agent backend.
 
 ## Subdirectories
-- `commands/` - Command-layer modules for the Nr plugin, with a subdirectory per text or web command flow.
+- `commands/` - Nostr Radar command layer organized by subcommand, including contracts, execution, and rendering.
 - `scripts/` - Maintenance and data-seeding scripts for Nostr cache/context migration and recommendation signals.
-- `types/` - Parameter types used to adapt parsed Nr command invocations into execution context.
+- `types/` - Defines parsed-command adapter and runtime-context parameter types.

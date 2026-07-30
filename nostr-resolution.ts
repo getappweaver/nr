@@ -1,3 +1,4 @@
+import type { Monitoring } from '@src/core/monitoring';
 import type {
   EventReferenceEdge,
   EventReferenceRole,
@@ -20,15 +21,19 @@ type SeedEventWithHints = {
 type SeedNostrEventsProps = {
   service: NostrResolutionService;
   events: SeedEventWithHints[];
+  monitoring: Monitoring | null;
 };
+
+type SeedNostrEventsOrThrowProps = Omit<SeedNostrEventsProps, 'monitoring'>;
 
 type ResolveGraphTargetProps = {
   graph: ResolvedEventGraph;
   edge: EventReferenceEdge;
 };
 
-const LIST_CONTEXT_RESOLUTION_TIMEOUT_MS = 500;
-const LIST_CONTEXT_RESOLUTION_BATCH_SIZE = 25;
+const LIST_CONTEXT_CACHE_TIMEOUT_MS = 500;
+const LIST_CONTEXT_CACHE_BATCH_SIZE = 25;
+const NR_SEED_BATCH_SIZE = 100;
 
 function parseEvent(value: unknown): NostrEvent | null {
   const parsed = NostrEventSchema.safeParse(value);
@@ -119,6 +124,7 @@ function eventForEdge({
 export async function seedNostrEvents({
   service,
   events,
+  monitoring,
 }: SeedNostrEventsProps): Promise<void> {
   const byId = new Map<string, SeedEventWithHints>();
 
@@ -135,15 +141,32 @@ export async function seedNostrEvents({
 
   const unique = [...byId.values()];
 
-  for (let index = 0; index < unique.length; index += 100) {
+  for (let index = 0; index < unique.length; index += NR_SEED_BATCH_SIZE) {
     try {
-      await service.seedEvents({
-        entries: unique.slice(index, index + 100).map((input) => ({
-          event: input.event,
-          relayHints: input.relayHints,
-          lastCheckedAtMs: null,
-        })),
-      });
+      const batch = unique.slice(index, index + NR_SEED_BATCH_SIZE);
+
+      const seedBatch = () =>
+        service.seedEvents({
+          entries: batch.map((input) => ({
+            event: input.event,
+            relayHints: input.relayHints,
+            lastCheckedAtMs: null,
+          })),
+        });
+
+      if (monitoring?.currentContext()) {
+        await monitoring.withSpan({
+          name: 'nr.list.seed-batch',
+          attributes: {
+            batchIndex: Math.floor(index / NR_SEED_BATCH_SIZE),
+            eventCount: batch.length,
+          },
+          parent: null,
+          run: seedBatch,
+        });
+      } else {
+        await seedBatch();
+      }
     } catch {
       // NR remains durable and readable when disposable cache seeding fails.
     }
@@ -153,13 +176,13 @@ export async function seedNostrEvents({
 export async function seedNostrEventsOrThrow({
   service,
   events,
-}: SeedNostrEventsProps): Promise<void> {
+}: SeedNostrEventsOrThrowProps): Promise<void> {
   const byId = new Map(events.map((input) => [input.event.id, input]));
   const unique = [...byId.values()];
 
-  for (let index = 0; index < unique.length; index += 100) {
+  for (let index = 0; index < unique.length; index += NR_SEED_BATCH_SIZE) {
     const result = await service.seedEvents({
-      entries: unique.slice(index, index + 100).map((input) => ({
+      entries: unique.slice(index, index + NR_SEED_BATCH_SIZE).map((input) => ({
         event: input.event,
         relayHints: input.relayHints,
         lastCheckedAtMs: null,
@@ -175,12 +198,15 @@ export async function seedNostrEventsOrThrow({
 export async function seedStoredNrEvents({
   service,
   events,
+  monitoring,
 }: {
   service: NostrResolutionService;
   events: NrEvent[];
+  monitoring: Monitoring;
 }): Promise<void> {
   await seedNostrEvents({
     service,
+    monitoring,
     events: events.flatMap((event) => {
       const root = parseEventJson(event.raw_json);
 
@@ -198,6 +224,7 @@ export async function seedStoredProfileEvents({
 }): Promise<void> {
   await seedNostrEvents({
     service,
+    monitoring: null,
     events: events.flatMap(({ event, referencedEvents }) => [
       { event, relayHints: [] },
       ...referencedEvents.map((reference) => ({
@@ -212,10 +239,12 @@ export async function hydrateStoredNrEvents({
   service,
   events,
   contextRelays,
+  monitoring,
 }: {
   service: NostrResolutionService;
   events: NrEvent[];
   contextRelays: string[];
+  monitoring: Monitoring;
 }): Promise<void> {
   const contextIds = [
     ...new Set(
@@ -227,17 +256,23 @@ export async function hydrateStoredNrEvents({
   ];
 
   const resolvedById = new Map<string, NostrEvent>();
-  const deadlineAtMs = Date.now() + LIST_CONTEXT_RESOLUTION_TIMEOUT_MS;
+  const deadlineAtMs = Date.now() + LIST_CONTEXT_CACHE_TIMEOUT_MS;
 
   for (
     let index = 0;
     index < contextIds.length && Date.now() < deadlineAtMs;
-    index += LIST_CONTEXT_RESOLUTION_BATCH_SIZE
+    index += LIST_CONTEXT_CACHE_BATCH_SIZE
   ) {
-    const results = await Promise.all(
-      contextIds
-        .slice(index, index + LIST_CONTEXT_RESOLUTION_BATCH_SIZE)
-        .map((eventId) =>
+    const cacheOnlyDeadlineAtMs = Date.now();
+
+    const batch = contextIds.slice(
+      index,
+      index + LIST_CONTEXT_CACHE_BATCH_SIZE,
+    );
+
+    const resolveBatch = () =>
+      Promise.all(
+        batch.map((eventId) =>
           service
             .resolveEventById({
               eventId,
@@ -245,11 +280,23 @@ export async function hydrateStoredNrEvents({
               relayHints: [],
               contextRelays,
               fallbackRelays: contextRelays,
-              deadlineAtMs,
+              deadlineAtMs: cacheOnlyDeadlineAtMs,
             })
             .catch(() => null),
         ),
-    );
+      );
+
+    const results = monitoring.currentContext()
+      ? await monitoring.withSpan({
+          name: 'nr.list.hydrate-batch',
+          attributes: {
+            batchIndex: Math.floor(index / LIST_CONTEXT_CACHE_BATCH_SIZE),
+            eventCount: batch.length,
+          },
+          parent: null,
+          run: resolveBatch,
+        })
+      : await resolveBatch();
 
     for (const result of results) {
       if (result?.event) {
@@ -260,19 +307,15 @@ export async function hydrateStoredNrEvents({
 
   for (const stored of events) {
     stored.thread_context_json = JSON.stringify(
-      parseContextIds(stored.thread_context_json).flatMap((id) => {
-        const event = resolvedById.get(id);
-
-        return event ? [event] : [];
-      }),
+      parseContextIds(stored.thread_context_json).map(
+        (id) => resolvedById.get(id) ?? { id },
+      ),
     );
 
     stored.referenced_events_json = JSON.stringify(
-      parseContextIds(stored.referenced_events_json).flatMap((id) => {
-        const event = resolvedById.get(id);
-
-        return event ? [event] : [];
-      }),
+      parseContextIds(stored.referenced_events_json).map(
+        (id) => resolvedById.get(id) ?? { id },
+      ),
     );
   }
 }

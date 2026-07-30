@@ -1,5 +1,7 @@
 import { createHash } from 'crypto';
 
+import type { Database } from 'bun:sqlite';
+
 import { parseRelayUrls } from '@src/env';
 import { debug } from '@src/logger';
 import { filterBlockedReadRelays } from '@src/nostr/relay-notices';
@@ -73,7 +75,7 @@ function needsNestedReferences(event: NrEvent): boolean {
 }
 
 type SendFetchStatusProps = {
-  params: NrCommandAdapterParams;
+  params: FetchRuntimeParams;
   message: string;
   output: string | null;
   progress: number | null;
@@ -92,7 +94,7 @@ type RelayAuthorGroup = {
 };
 
 type FetchRelayGroupPagesProps = {
-  params: NrCommandAdapterParams;
+  params: FetchRuntimeParams;
   group: RelayAuthorGroup;
   since: number;
   until: number;
@@ -116,7 +118,91 @@ type MapWithConcurrencyProps<T, R> = {
   map: (item: T) => Promise<R>;
 };
 
+type FetchRuntimeParams = Pick<
+  NrCommandAdapterParams,
+  'db' | 'source' | 'runAgent' | 'sendReply' | 'storedCtx'
+>;
+
+type FetchEvaluateProps = {
+  params: FetchRuntimeParams;
+  peopleLimit: number | null;
+  sinceHours: number;
+  explicitSince: number | null;
+  explicitUntil: number | null;
+  limit: number;
+  oneOffInstructions: string | null;
+  waitForRelayListRefresh: boolean;
+};
+
+type FetchLockRow = {
+  owner_pid: number;
+};
+
 const CLASSIFICATION_TIMEOUT_MS = 120_000;
+const FETCH_LOCK_NAME = 'fetch-evaluate';
+
+function isProcessRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function acquireFetchLock(db: Database): () => void {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS nr_operation_locks (
+      name TEXT PRIMARY KEY,
+      owner_pid INTEGER NOT NULL,
+      acquired_at INTEGER NOT NULL
+    )
+  `);
+
+  const insert = db.prepare(
+    `INSERT OR IGNORE INTO nr_operation_locks (name, owner_pid, acquired_at)
+     VALUES (?, ?, ?)`,
+  );
+
+  let result = insert.run(FETCH_LOCK_NAME, process.pid, Date.now());
+
+  if (result.changes === 0) {
+    const existing = db
+      .prepare('SELECT owner_pid FROM nr_operation_locks WHERE name = ?')
+      .get(FETCH_LOCK_NAME) as FetchLockRow | null;
+
+    if (existing && isProcessRunning(existing.owner_pid)) {
+      throw new Error(
+        `A Nostr Radar fetch is already running (PID ${existing.owner_pid}). Wait for it to finish; do not retry.`,
+      );
+    }
+
+    db.prepare(
+      'DELETE FROM nr_operation_locks WHERE name = ? AND owner_pid = ?',
+    ).run(FETCH_LOCK_NAME, existing?.owner_pid ?? -1);
+
+    result = insert.run(FETCH_LOCK_NAME, process.pid, Date.now());
+
+    if (result.changes === 0) {
+      throw new Error(
+        'Another Nostr Radar fetch started concurrently. Wait for it to finish; do not retry.',
+      );
+    }
+  }
+
+  return () => {
+    try {
+      db.prepare(
+        'DELETE FROM nr_operation_locks WHERE name = ? AND owner_pid = ?',
+      ).run(FETCH_LOCK_NAME, process.pid);
+    } catch (error) {
+      debug(
+        `nr fetch-latest: failed to release fetch lock: ${errorMessage(error)}`,
+      );
+    }
+  };
+}
 
 async function sendFetchStatus({
   params,
@@ -384,8 +470,43 @@ export async function adaptFetchLatestCommand(
   const explicitSince = optionalIntegerOption(params.parsed.options.since);
   const explicitUntil = optionalIntegerOption(params.parsed.options.until);
   const limit = integerOption(params.parsed.options.limit, 50);
-  const settings = getNrSettings(params.db);
   const oneOffInstructions = asString(params.parsed.options.instructions);
+
+  return fetchEvaluate({
+    params,
+    peopleLimit,
+    sinceHours,
+    explicitSince,
+    explicitUntil,
+    limit,
+    oneOffInstructions,
+    waitForRelayListRefresh: false,
+  });
+}
+
+export async function fetchEvaluate(
+  props: FetchEvaluateProps,
+): Promise<string> {
+  const releaseLock = acquireFetchLock(props.params.db);
+
+  try {
+    return await runFetchEvaluate(props);
+  } finally {
+    releaseLock();
+  }
+}
+
+async function runFetchEvaluate({
+  params,
+  peopleLimit,
+  sinceHours,
+  explicitSince,
+  explicitUntil,
+  limit,
+  oneOffInstructions,
+  waitForRelayListRefresh,
+}: FetchEvaluateProps): Promise<string> {
+  const settings = getNrSettings(params.db);
   const instructions = oneOffInstructions?.trim() || settings.instructions;
 
   const follows = await params.storedCtx.wot.getFollows(
@@ -919,13 +1040,19 @@ export async function adaptFetchLatestCommand(
     error: errors.length > 0 ? errors.join('; ') : null,
   });
 
-  void params.storedCtx.wot
+  const relayListRefresh = params.storedCtx.wot
     .refreshRelayLists?.(authors)
-    .catch((error) =>
+    .catch((error) => {
       debug(
         `nr fetch-latest: background relay-list refresh failed: ${errorMessage(error)}`,
-      ),
-    );
+      );
+    });
+
+  if (waitForRelayListRefresh) {
+    await relayListRefresh;
+  } else {
+    void relayListRefresh;
+  }
 
   return [
     explicitSince === null && explicitUntil === null

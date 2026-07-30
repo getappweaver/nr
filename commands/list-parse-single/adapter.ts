@@ -197,6 +197,7 @@ export async function adaptListParseSingleCommand(
     service: params.storedCtx.nostrResolution,
     events: [result.event],
     contextRelays: parseRelayUrls(process.env.BOT_RELAYS ?? ''),
+    monitoring: params.storedCtx.monitoring,
   });
 
   if (params.source !== 'web') {
@@ -218,6 +219,7 @@ export async function adaptListParseSingleCommand(
     profiles: await params.storedCtx.wot.getProfiles({
       pubkeys: collectProfilePubkeys(result.event),
       waitForMissing: false,
+      refreshCached: true,
     }),
     event: result.event,
     interactions: listNrInteractions(params.db),

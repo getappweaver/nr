@@ -178,6 +178,8 @@ export function renderNrListParseSingleWeb({
                   localPreferences: new Map(),
                   authorPreferences: new Map(),
                   sharePrefixes: nrSharePrefixes(settings),
+                  translationTargetLanguage:
+                    settings.translationTargetLanguage ?? 'en',
                   rankingScore: null,
                   mode: 'timeline',
                   renderScope: 'parse-single',

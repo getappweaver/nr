@@ -46,7 +46,7 @@ export function buildNrPluginContextText(db: Database): string {
   );
 
   return [
-    'Use this existing taxonomy to consolidate similar tags instead of inventing near-duplicates.',
+    'This existing taxonomy is advisory, not closed. Reuse a tag only for an exact semantic match; do not let it suppress specific keywords for concrete details.',
     `Preferred manual topics: ${formatManualTags(manualTopics)}`,
     `Preferred manual moods: ${formatManualTags(manualMoods)}`,
     `Current topics: ${formatTagCounts(topicCounts)}`,

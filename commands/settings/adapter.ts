@@ -1,8 +1,18 @@
+import { SchedulerV1 } from '@src/capabilities/scheduler.v1';
+import type { CapabilityResourceRef } from '@src/capabilities/types';
 import type { AgentBackendName } from '@src/db';
 import type { WebNode, WebNodeRoot } from '@src/web/ui-schema';
 
-import { getNrSettings, resetNrSettings, saveNrSettings } from '../../settings';
+import {
+  getNrSchedulerResource,
+  getNrSettings,
+  resetNrSettings,
+  saveNrSchedulerResource,
+  saveNrSettings,
+} from '../../settings';
 import type { NrCommandAdapterParams } from '../../types/adapter-params';
+
+import { NR_HOURLY_SCHEDULER_INPUT } from '../schedule/adapter';
 
 function text(value: string): WebNode {
   return { type: 'text', value };
@@ -70,6 +80,7 @@ function formatSettings(settings: ReturnType<typeof getNrSettings>): string {
     `Model: ${settings.model ?? '(default)'}`,
     `Event share URL: ${settings.eventSharePrefix}`,
     `Profile share URL: ${settings.profileSharePrefix}`,
+    `Translation target language: ${settings.translationTargetLanguage ?? 'en'}`,
     `Relay fetch concurrency: ${settings.relayFetchConcurrency}`,
     `AI evaluation concurrency: ${settings.aiEvaluationConcurrency}`,
     '',
@@ -81,14 +92,94 @@ function formatSettings(settings: ReturnType<typeof getNrSettings>): string {
 type RenderSettingsWebProps = {
   alias: string;
   settings: ReturnType<typeof getNrSettings>;
+  modelChoices: string[];
   message: string | null;
+  scheduler: SchedulerSettingsState | null;
+  schedulerSetupNeeded: boolean;
 };
+
+type SchedulerSettingsState = {
+  resource: CapabilityResourceRef;
+  status: 'draft' | 'created' | 'unavailable';
+  enabled: boolean;
+  scheduleDescription: string;
+};
+
+async function loadSchedulerSettingsState(
+  params: NrCommandAdapterParams,
+): Promise<SchedulerSettingsState | null> {
+  const resource = getNrSchedulerResource(params.db);
+
+  if (!resource) {
+    return null;
+  }
+
+  const result = await params.storedCtx.capabilities.invoke({
+    operation: SchedulerV1.operations.show,
+    provider: resource.providerId,
+    input: { resourceId: resource.resourceId },
+  });
+
+  if (result.status !== 'success') {
+    return {
+      resource,
+      status: 'unavailable',
+      enabled: false,
+      scheduleDescription: 'Scheduler provider unavailable',
+    };
+  }
+
+  return {
+    resource: result.output.resource,
+    status: result.output.status,
+    enabled: result.output.enabled,
+    scheduleDescription: result.output.scheduleDescription,
+  };
+}
+
+type RenderSettingsResultProps = {
+  params: NrCommandAdapterParams;
+  settings: ReturnType<typeof getNrSettings>;
+  message: string | null;
+  schedulerSetupNeeded: boolean;
+};
+
+async function renderSettingsResult({
+  params,
+  settings,
+  message,
+  schedulerSetupNeeded,
+}: RenderSettingsResultProps): Promise<WebNodeRoot> {
+  const [modelChoices, scheduler] = await Promise.all([
+    params.storedCtx.getAvailableModels().catch(() => []),
+    loadSchedulerSettingsState(params),
+  ]);
+
+  return renderSettingsWeb({
+    alias: params.alias,
+    settings,
+    modelChoices,
+    message,
+    scheduler,
+    schedulerSetupNeeded,
+  });
+}
 
 function renderSettingsWeb({
   alias,
   settings,
+  modelChoices,
   message,
+  scheduler,
+  schedulerSetupNeeded,
 }: RenderSettingsWebProps): WebNodeRoot {
+  const modelCatalog =
+    settings.model && !modelChoices.includes(settings.model)
+      ? [settings.model, ...modelChoices]
+      : modelChoices;
+
+  const choices = ['reset', ...modelCatalog];
+
   return {
     kind: 'ui',
     version: 1,
@@ -107,6 +198,8 @@ function renderSettingsWeb({
             'instructions',
             'event_share_prefix',
             'profile_share_prefix',
+            'translation_target_language',
+            'hourly_scheduler',
             'relay_fetch_concurrency',
             'ai_evaluation_concurrency',
           ],
@@ -143,8 +236,10 @@ function renderSettingsWeb({
             'textField',
             {
               formFieldName: 'model',
-              inputPlaceholder: 'model override (empty = default)',
+              inputPlaceholder: 'model override (reset = default)',
               value: settings.model ?? '',
+              choices,
+              choiceLabels: { reset: 'Clear / reset' },
             },
             [],
           ),
@@ -200,6 +295,94 @@ function renderSettingsWeb({
             [],
           ),
           el('text', { weight: 'semibold', size: 'sm' }, [
+            text('Translation target language'),
+          ]),
+          el(
+            'textField',
+            {
+              formFieldName: 'translation_target_language',
+              inputPlaceholder: 'en (reset = English)',
+              value: settings.translationTargetLanguage ?? '',
+              choices: ['reset', 'en'],
+              choiceLabels: { reset: 'Clear / use English' },
+            },
+            [],
+          ),
+          el('text', { weight: 'semibold', size: 'sm' }, [text('Scheduling')]),
+          el('row', { gap: 'xs', itemAlign: 'center' }, [
+            el(
+              'checkbox',
+              {
+                formFieldName: 'hourly_scheduler',
+                value: 'true',
+                checked: scheduler !== null,
+                disabled: scheduler !== null,
+                className: 'web-checkbox--retro',
+              },
+              [],
+            ),
+            text('Create hourly scheduler to fetch and evaluate'),
+          ]),
+          ...(scheduler
+            ? [
+                el('text', { tone: 'muted', size: 'sm' }, [
+                  text(
+                    `Status: ${scheduler.status}${scheduler.enabled ? ' · enabled' : ''} · ${scheduler.scheduleDescription}`,
+                  ),
+                ]),
+                ...(scheduler.status === 'unavailable'
+                  ? []
+                  : [
+                      el(
+                        'button',
+                        {
+                          label:
+                            scheduler.status === 'draft'
+                              ? 'Review scheduled job'
+                              : 'View scheduled job',
+                          action: {
+                            type: 'capability',
+                            operation: SchedulerV1.operations.show.id,
+                            input: {
+                              resourceId: scheduler.resource.resourceId,
+                            },
+                            consumerAlias: alias,
+                            providerId: scheduler.resource.providerId,
+                            selection: 'auto',
+                            surface: 'modal',
+                            modalTitle: 'Scheduled Nostr Radar job',
+                          },
+                        },
+                        [],
+                      ),
+                    ]),
+              ]
+            : []),
+          ...(schedulerSetupNeeded
+            ? [
+                el('text', { tone: 'warning', size: 'sm' }, [
+                  text('Choose or install a scheduler provider to continue.'),
+                ]),
+                el(
+                  'button',
+                  {
+                    label: 'Configure scheduler',
+                    action: {
+                      type: 'command',
+                      command: alias,
+                      subcommand: 'schedule',
+                      arguments: {},
+                      options: {},
+                      surface: 'modal',
+                      modalTitle: 'Nostr radar schedule',
+                      recordInTimeline: false,
+                    },
+                  },
+                  [],
+                ),
+              ]
+            : []),
+          el('text', { weight: 'semibold', size: 'sm' }, [
             text('Concurrent relay groups'),
           ]),
           el(
@@ -237,20 +420,20 @@ function renderSettingsWeb({
   };
 }
 
-export function adaptSettingsCommand(params: NrCommandAdapterParams) {
+export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
   void params.command;
   void params.identity;
   void params.runAgent;
-  void params.storedCtx;
 
   if (parseBooleanOption(params.parsed.options.reset)) {
     const settings = resetNrSettings(params.db);
 
     if (params.source === 'web') {
-      return renderSettingsWeb({
-        alias: params.alias,
+      return renderSettingsResult({
+        params,
         settings,
         message: 'Reset nr parse AI settings.',
+        schedulerSetupNeeded: false,
       });
     }
 
@@ -260,7 +443,8 @@ export function adaptSettingsCommand(params: NrCommandAdapterParams) {
   }
 
   const backend = parseBackend(params.parsed.options.backend);
-  const model = asOptionalStringOverride(params.parsed.options.model);
+  const modelValue = asOptionalStringOverride(params.parsed.options.model);
+  const model = modelValue === 'reset' ? null : modelValue;
 
   const instructions = asOptionalStringOverride(
     params.parsed.options.instructions,
@@ -274,6 +458,15 @@ export function adaptSettingsCommand(params: NrCommandAdapterParams) {
     params.parsed.options.profile_share_prefix,
   );
 
+  const translationTargetLanguageValue = asOptionalStringOverride(
+    params.parsed.options.translation_target_language,
+  );
+
+  const translationTargetLanguage =
+    translationTargetLanguageValue === 'reset'
+      ? null
+      : translationTargetLanguageValue;
+
   const relayFetchConcurrency = parsePositiveInteger(
     params.parsed.options.relay_fetch_concurrency,
   );
@@ -282,12 +475,18 @@ export function adaptSettingsCommand(params: NrCommandAdapterParams) {
     params.parsed.options.ai_evaluation_concurrency,
   );
 
+  const hourlySchedulerRequested = parseBooleanOption(
+    params.parsed.options.hourly_scheduler,
+  );
+
   const hasUpdates =
     backend !== undefined ||
     model !== undefined ||
     instructions !== undefined ||
     eventSharePrefix !== undefined ||
     profileSharePrefix !== undefined ||
+    translationTargetLanguage !== undefined ||
+    hourlySchedulerRequested ||
     relayFetchConcurrency !== undefined ||
     aiEvaluationConcurrency !== undefined;
 
@@ -295,10 +494,11 @@ export function adaptSettingsCommand(params: NrCommandAdapterParams) {
     const settings = getNrSettings(params.db);
 
     if (params.source === 'web') {
-      return renderSettingsWeb({
-        alias: params.alias,
+      return renderSettingsResult({
+        params,
         settings,
         message: null,
+        schedulerSetupNeeded: false,
       });
     }
 
@@ -321,17 +521,42 @@ export function adaptSettingsCommand(params: NrCommandAdapterParams) {
       profileSharePrefix === undefined
         ? current.profileSharePrefix
         : (profileSharePrefix ?? ''),
+    translationTargetLanguage:
+      translationTargetLanguage === undefined
+        ? current.translationTargetLanguage
+        : translationTargetLanguage,
     relayFetchConcurrency:
       relayFetchConcurrency ?? current.relayFetchConcurrency,
     aiEvaluationConcurrency:
       aiEvaluationConcurrency ?? current.aiEvaluationConcurrency,
   });
 
+  let schedulerSetupNeeded = false;
+  let schedulerCreated = false;
+
+  if (hourlySchedulerRequested && !getNrSchedulerResource(params.db)) {
+    const result = await params.storedCtx.capabilities.invoke({
+      operation: SchedulerV1.operations.create,
+      provider: 'auto',
+      input: NR_HOURLY_SCHEDULER_INPUT,
+    });
+
+    if (result.status === 'success') {
+      saveNrSchedulerResource(params.db, result.output.resource);
+      schedulerCreated = true;
+    } else {
+      schedulerSetupNeeded = true;
+    }
+  }
+
   if (params.source === 'web') {
-    return renderSettingsWeb({
-      alias: params.alias,
+    return renderSettingsResult({
+      params,
       settings: next,
-      message: 'Saved nr parse AI settings.',
+      message: schedulerCreated
+        ? 'Saved settings and created the hourly scheduler.'
+        : 'Saved nr parse AI settings.',
+      schedulerSetupNeeded,
     });
   }
 

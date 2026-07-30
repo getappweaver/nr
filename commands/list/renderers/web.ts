@@ -1,8 +1,15 @@
 import { nip19 } from 'nostr-tools';
 
+import { TranslationV1 } from '@src/capabilities/translation.v1';
+import type { CapabilityResourceRef } from '@src/capabilities/types';
 import type { CachedProfile } from '@src/db';
+import { parseEventReferences } from '@src/nostr/event-references';
 import { nostrShareUrl, type NostrSharePrefixes } from '@src/web/nostr-share';
-import type { WebNode, WebNodeRoot } from '@src/web/ui-schema';
+import type {
+  WebNode,
+  WebNodeRoot,
+  WebNostrPostReference,
+} from '@src/web/ui-schema';
 
 import { parseNostrEventArray } from '../../../nostr-resolution';
 import {
@@ -100,6 +107,7 @@ const nrListStylesheet = {
 type RenderNrListWebProps = {
   alias: string;
   listData: NrListData;
+  schedulerResource: CapabilityResourceRef | null;
   profiles: Map<string, CachedProfile>;
 };
 
@@ -130,6 +138,10 @@ function keyed(renderKey: string, node: WebNode): WebNode {
 
 function entityKey(eventId: string): string {
   return `nostr-event:${eventId}`;
+}
+
+function tagGroupEntityKey(type: 'topic' | 'mood', tag: string): string {
+  return `nr-${type}:${tag}`;
 }
 
 function npubForPubkey(pubkey: string): string | undefined {
@@ -411,6 +423,24 @@ function countLabel(label: string, count: number): string {
   return `${label} (${count})`;
 }
 
+function optimisticCommandAction({
+  mutations,
+  command,
+}: {
+  mutations: Array<Record<string, unknown>>;
+  command: Record<string, unknown>;
+}) {
+  return {
+    type: 'clientAction' as const,
+    action: 'web.optimisticCommand',
+    payload: {
+      mutations,
+      command,
+      onError: 'log',
+    },
+  };
+}
+
 function interactionFlags(
   interactions: NrInteraction[],
   eventId: string | undefined,
@@ -445,22 +475,30 @@ type MarkActionProps = {
 };
 
 function markAction({ alias, eventId, state, mode }: MarkActionProps) {
-  return {
-    type: 'command' as const,
-    command: alias,
-    subcommand: 'mark',
-    arguments: { event_id: eventId },
-    options: { [state]: true },
-    recordInTimeline: false,
-    pendingUi: { presentation: 'entity' as const, label: 'Updating...' },
-    refresh: {
+  return optimisticCommandAction({
+    mutations: [
+      {
+        type: 'removeEntity',
+        entityKey: entityKey(eventId),
+        pruneEmptyParents: true,
+        updateCounts: true,
+      },
+    ],
+    command: {
       command: alias,
-      subcommand: 'list',
-      arguments: {},
-      options: mode ? { mode } : {},
-      recordInTimeline: false,
+      subcommand: 'mark',
+      arguments: { event_id: eventId },
+      options: { [state]: true },
+      ...(state === 'read'
+        ? {
+            monitoring: {
+              name: 'nr.read',
+              attributes: { eventId, mode: mode ?? 'unknown' },
+            },
+          }
+        : {}),
     },
-  };
+  });
 }
 
 type ReadActionProps = {
@@ -476,36 +514,52 @@ function readAction({ alias, eventId, mode }: ReadActionProps) {
 function localPreferenceAction({
   alias,
   eventId,
-  mode,
   preference,
 }: {
   alias: string;
   eventId: string;
-  mode: NrListMode;
   preference: 'like' | 'dislike' | 'none';
 }) {
-  return {
-    type: 'command' as const,
-    command: alias,
-    subcommand: 'interest-record',
-    arguments: {},
-    options: { target_event_id: eventId, preference },
-    recordInTimeline: false,
-    pendingUi: { presentation: 'entity' as const, label: 'Updating...' },
-    refresh: {
+  return optimisticCommandAction({
+    mutations: [
+      {
+        type: 'patchEntityActions',
+        entityKey: entityKey(eventId),
+        actions: [
+          {
+            key: 'nr.localPreference.like',
+            label: preference === 'like' ? '(👍)' : '👍',
+            active: preference === 'like',
+            ariaLabel:
+              preference === 'like'
+                ? 'Remove local positive preference'
+                : 'Show more posts like this locally',
+          },
+          {
+            key: 'nr.localPreference.dislike',
+            label: preference === 'dislike' ? '(👎)' : '👎',
+            active: preference === 'dislike',
+            ariaLabel:
+              preference === 'dislike'
+                ? 'Remove local negative preference'
+                : 'Show fewer posts like this locally',
+          },
+        ],
+      },
+    ],
+    command: {
       command: alias,
-      subcommand: 'list',
+      subcommand: 'interest-record',
       arguments: {},
-      options: { mode },
-      recordInTimeline: false,
+      options: { target_event_id: eventId, preference },
     },
-  };
+  });
 }
 
 function localPreferenceActions({
   alias,
   eventId,
-  mode,
+  mode: _mode,
   preference,
 }: {
   alias: string;
@@ -515,6 +569,7 @@ function localPreferenceActions({
 }) {
   return [
     {
+      optimisticKey: 'nr.localPreference.like',
       label: preference === 'like' ? '(👍)' : '👍',
       ariaLabel:
         preference === 'like'
@@ -523,13 +578,13 @@ function localPreferenceActions({
       action: localPreferenceAction({
         alias,
         eventId,
-        mode,
         preference: preference === 'like' ? 'none' : 'like',
       }),
       disabled: false,
       active: preference === 'like',
     },
     {
+      optimisticKey: 'nr.localPreference.dislike',
       label: preference === 'dislike' ? '(👎)' : '👎',
       ariaLabel:
         preference === 'dislike'
@@ -538,7 +593,6 @@ function localPreferenceActions({
       action: localPreferenceAction({
         alias,
         eventId,
-        mode,
         preference: preference === 'dislike' ? 'none' : 'dislike',
       }),
       disabled: false,
@@ -569,44 +623,71 @@ function markRawEventAction({
   state,
   mode,
 }: MarkRawEventActionProps) {
-  return {
-    type: 'command' as const,
-    command: alias,
-    subcommand: 'mark',
-    arguments: { event_id: event.id },
-    options: { [state]: true, event_json: JSON.stringify(event) },
-    recordInTimeline: false,
-    pendingUi: { presentation: 'entity' as const, label: 'Updating...' },
-    refresh: {
+  return optimisticCommandAction({
+    mutations: [
+      {
+        type: 'removeEntity',
+        entityKey: entityKey(event.id),
+        pruneEmptyParents: true,
+        updateCounts: true,
+      },
+    ],
+    command: {
       command: alias,
-      subcommand: 'list',
-      arguments: {},
-      options: { mode },
-      recordInTimeline: false,
+      subcommand: 'mark',
+      arguments: { event_id: event.id },
+      options: { [state]: true, event_json: JSON.stringify(event) },
+      ...(state === 'read'
+        ? {
+            monitoring: {
+              name: 'nr.read',
+              attributes: { eventId: event.id, mode },
+            },
+          }
+        : {}),
     },
-  };
+  });
 }
 
-function readTagAction(
-  alias: string,
-  type: 'topic' | 'mood',
-  tag: string,
-  mode: NrListMode,
-) {
+function readTagAction(alias: string, type: 'topic' | 'mood', tag: string) {
+  return optimisticCommandAction({
+    mutations: [
+      {
+        type: 'removeEntity',
+        entityKey: tagGroupEntityKey(type, tag),
+        pruneEmptyParents: true,
+        updateCounts: true,
+      },
+    ],
+    command: {
+      command: alias,
+      subcommand: 'mark',
+      arguments: {},
+      options: { type, tag, read: true },
+    },
+  });
+}
+
+type AddPreferredTagActionProps = {
+  alias: string;
+  type: 'topic' | 'mood';
+  tag: string;
+};
+
+function addPreferredTagAction({
+  alias,
+  type,
+  tag,
+}: AddPreferredTagActionProps) {
   return {
     type: 'command' as const,
     command: alias,
-    subcommand: 'mark',
+    subcommand: 'taxonomy',
     arguments: {},
-    options: { type, tag, read: true },
+    options: { type, mode: 'add', new_tag: tag },
     recordInTimeline: false,
-    refresh: {
-      command: alias,
-      subcommand: 'list',
-      arguments: {},
-      options: { mode },
-      recordInTimeline: false,
-    },
+    pendingUi: { presentation: 'none' as const },
+    clientStatus: { background: true },
   };
 }
 
@@ -902,8 +983,11 @@ function eventFilterText({ event, profiles }: EventFilterTextProps): string {
     .join(' ');
 }
 
-function inlineProfiles(content: string, profiles: Map<string, CachedProfile>) {
-  const inline: Record<string, unknown> = {};
+function inlineProfiles(
+  content: string,
+  profiles: Map<string, CachedProfile>,
+): NonNullable<WebNostrPostReference['inlineProfiles']> {
+  const inline: NonNullable<WebNostrPostReference['inlineProfiles']> = {};
 
   for (const reference of extractProfileReferences(content)) {
     const profile = profiles.get(reference.pubkey.toLowerCase());
@@ -959,12 +1043,14 @@ function nostrEmbeds({
   event,
   profiles,
   interactions,
+  translationTargetLanguage,
   mode,
 }: {
   alias: string;
   event: NrEvent;
   profiles: Map<string, CachedProfile>;
   interactions: NrInteraction[];
+  translationTargetLanguage: string;
   mode: NrListMode;
 }) {
   const eventsById = new Map(
@@ -998,6 +1084,7 @@ function nostrEmbeds({
                         alias,
                         event: nestedEvent,
                         profiles,
+                        translationTargetLanguage,
                       }),
                       token: nestedReference.token,
                     },
@@ -1023,6 +1110,15 @@ function nostrEmbeds({
       relayHints: [],
       createdAt: referencedEvent?.created_at,
       content: referencedEvent?.content,
+      trailingActions: referencedEvent
+        ? [
+            translationPostAction({
+              alias,
+              content: referencedEvent.content,
+              targetLanguage: translationTargetLanguage,
+            }),
+          ]
+        : undefined,
       embeddedReferences,
       readAction: referencedEvent
         ? markRawEventAction({
@@ -1078,8 +1174,59 @@ type ThreadContextReferencesProps = {
   profiles: Map<string, CachedProfile>;
   interactions: NrInteraction[];
   localPreferences: Map<string, 'like' | 'dislike'>;
+  translationTargetLanguage: string;
   mode: NrListMode;
 };
+
+type UnresolvedReplyReferenceProps = {
+  alias: string;
+  id: string;
+  relay: string | null;
+  mode: NrListMode;
+};
+
+function unresolvedReplyReference({
+  alias,
+  id,
+  relay,
+  mode,
+}: UnresolvedReplyReferenceProps): WebNostrPostReference {
+  return {
+    entityKey: entityKey(id),
+    type: 'event',
+    id,
+    relayHints: relay ? [relay] : [],
+    resolutionStatus: 'unresolved',
+    readAction: markAction({ alias, eventId: id, state: 'read', mode }),
+    archiveAction: markAction({ alias, eventId: id, state: 'archived', mode }),
+    showActions: false,
+  };
+}
+
+function threadEventReferences(event: NostrEvent): Array<{
+  id: string;
+  relay: string | null;
+}> {
+  const references = parseEventReferences(event).filter(
+    (edge) =>
+      (edge.role === 'thread-root' || edge.role === 'thread-parent') &&
+      edge.target.type === 'event',
+  );
+
+  return [
+    ...new Map(
+      references.map((edge) => [
+        edge.target.type === 'event' ? edge.target.eventId : '',
+        edge,
+      ]),
+    ).values(),
+  ]
+    .slice(0, 8)
+    .map((edge) => ({
+      id: edge.target.type === 'event' ? edge.target.eventId : '',
+      relay: edge.relayHints[0] ?? null,
+    }));
+}
 
 function threadContextReferences({
   alias,
@@ -1087,6 +1234,7 @@ function threadContextReferences({
   profiles,
   interactions,
   localPreferences,
+  translationTargetLanguage,
   mode,
 }: ThreadContextReferencesProps) {
   const context = threadContextEvents(event);
@@ -1098,7 +1246,28 @@ function threadContextReferences({
     ]),
   );
 
-  return context.map((contextEvent) => {
+  let references: ReturnType<typeof threadEventReferences>;
+
+  try {
+    references = threadEventReferences(
+      NostrEventSchema.parse(JSON.parse(event.raw_json)),
+    );
+  } catch {
+    references = [];
+  }
+
+  return references.map((reference): WebNostrPostReference => {
+    const contextEvent = relatedEvents.get(reference.id);
+
+    if (!contextEvent) {
+      return unresolvedReplyReference({
+        alias,
+        id: reference.id,
+        relay: reference.relay,
+        mode,
+      });
+    }
+
     const profile = profileForPubkey({
       profiles,
       pubkey: contextEvent.pubkey,
@@ -1109,6 +1278,7 @@ function threadContextReferences({
     return {
       entityKey: entityKey(contextEvent.id),
       type: 'event' as const,
+      resolutionStatus: 'resolved' as const,
       id: contextEvent.id,
       pubkey: contextEvent.pubkey,
       kind: contextEvent.kind,
@@ -1149,12 +1319,19 @@ function threadContextReferences({
       reposted: flags.reposted,
       quoted: flags.quoted,
       showActions: true,
-      trailingActions: localPreferenceActions({
-        alias,
-        eventId: contextEvent.id,
-        mode,
-        preference: localPreferences.get(contextEvent.id) ?? null,
-      }),
+      trailingActions: [
+        translationPostAction({
+          alias,
+          content: contextEvent.content,
+          targetLanguage: translationTargetLanguage,
+        }),
+        ...localPreferenceActions({
+          alias,
+          eventId: contextEvent.id,
+          mode,
+          preference: localPreferences.get(contextEvent.id) ?? null,
+        }),
+      ],
       inlineProfiles: inlineProfiles(contextEvent.content, profiles),
       embeddedReferences: [
         ...extractEventReferences(contextEvent.content).flatMap((reference) => {
@@ -1167,6 +1344,7 @@ function threadContextReferences({
                     alias,
                     event: embeddedEvent,
                     profiles,
+                    translationTargetLanguage,
                   }),
                   token: reference.token,
                 },
@@ -1221,6 +1399,7 @@ type EventNodeProps = {
   localPreferences: Map<string, 'like' | 'dislike'>;
   authorPreferences: Map<string, NrAuthorPreferenceValue>;
   sharePrefixes: NostrSharePrefixes;
+  translationTargetLanguage: string;
   rankingScore: number | null;
   mode: NrListMode;
   renderScope: string;
@@ -1235,6 +1414,7 @@ export function eventNode({
   localPreferences,
   authorPreferences,
   sharePrefixes,
+  translationTargetLanguage,
   rankingScore,
   mode,
   renderScope,
@@ -1246,6 +1426,7 @@ export function eventNode({
       profiles,
       authorPreferences,
       sharePrefixes,
+      translationTargetLanguage,
       mode,
       renderScope,
     });
@@ -1304,6 +1485,7 @@ export function eventNode({
                 event,
                 profiles,
                 interactions: eventInteractions,
+                translationTargetLanguage,
                 mode,
               }),
               nostrReplyContext: threadContextReferences({
@@ -1312,6 +1494,7 @@ export function eventNode({
                 profiles,
                 interactions: eventInteractions,
                 localPreferences,
+                translationTargetLanguage,
                 mode,
               }),
               nostrShowReplyContext: showReplyContext,
@@ -1320,6 +1503,13 @@ export function eventNode({
                 eventId: event.id,
                 mode,
               }),
+              nostrExtraActions: [
+                translationPostAction({
+                  alias,
+                  content: post.content,
+                  targetLanguage: translationTargetLanguage,
+                }),
+              ],
               nostrTrailingActions: localPreferenceActions({
                 alias,
                 eventId: event.id,
@@ -1368,6 +1558,7 @@ type GroupNodeProps = {
   localPreferences: Map<string, 'like' | 'dislike'>;
   authorPreferences: Map<string, NrAuthorPreferenceValue>;
   sharePrefixes: NostrSharePrefixes;
+  translationTargetLanguage: string;
   mode: NrListMode;
 };
 
@@ -1394,11 +1585,13 @@ function activityTarget(event: NrEvent): NostrEvent | null {
 function mergedActivityNode({
   alias,
   target,
+  targetEvent,
   activities,
   profiles,
   localPreference,
   authorPreference,
   sharePrefixes,
+  translationTargetLanguage,
   rankingEvent,
   rankingScore,
   mode,
@@ -1406,11 +1599,13 @@ function mergedActivityNode({
 }: {
   alias: string;
   target: NostrEvent;
+  targetEvent: NrEvent | null;
   activities: NrEvent[];
   profiles: Map<string, CachedProfile>;
   localPreference: 'like' | 'dislike' | null;
   authorPreference: NrAuthorPreferenceValue | null;
   sharePrefixes: NostrSharePrefixes;
+  translationTargetLanguage: string;
   rankingEvent: NrEvent | null;
   rankingScore: number | null;
   mode: NrListMode;
@@ -1420,7 +1615,7 @@ function mergedActivityNode({
   const summary = rankingEvent?.summary ?? activities[0]?.summary ?? '';
 
   const relatedEvents = new Map(
-    activities
+    [...(targetEvent ? [targetEvent] : []), ...activities]
       .flatMap((activity) => [
         ...threadContextEvents(activity),
         ...referencedEvents(activity),
@@ -1445,6 +1640,7 @@ function mergedActivityNode({
                   event,
                   profiles,
                   relatedEvents,
+                  translationTargetLanguage,
                 }),
               ],
             ]
@@ -1456,10 +1652,26 @@ function mergedActivityNode({
     ),
   ]);
 
-  const replyContext = extractNip10References(target)
-    .map((reference) => relatedEvents.get(reference.id))
-    .filter((event): event is NostrEvent => event !== undefined)
-    .map((event) => profileReference({ alias, event, profiles }));
+  const replyContext = threadEventReferences(target).map((reference) => {
+    const event = relatedEvents.get(reference.id);
+
+    return event
+      ? {
+          ...profileReference({
+            alias,
+            event,
+            profiles,
+            translationTargetLanguage,
+          }),
+          resolutionStatus: 'resolved' as const,
+        }
+      : unresolvedReplyReference({
+          alias,
+          id: reference.id,
+          relay: reference.relay,
+          mode,
+        });
+  });
 
   const headers = activities.flatMap((activity) => {
     try {
@@ -1515,6 +1727,7 @@ function mergedActivityNode({
           localPreference,
           authorPreference,
           sharePrefixes,
+          translationTargetLanguage,
           mode,
           renderScope: `${renderScope}:activity:${target.id}`,
         }),
@@ -1532,6 +1745,7 @@ function groupEventNodes({
   localPreferences,
   authorPreferences,
   sharePrefixes,
+  translationTargetLanguage,
   rankingScores,
   mode,
   renderScope,
@@ -1543,10 +1757,13 @@ function groupEventNodes({
   localPreferences: Map<string, 'like' | 'dislike'>;
   authorPreferences: Map<string, NrAuthorPreferenceValue>;
   sharePrefixes: NostrSharePrefixes;
+  translationTargetLanguage: string;
   rankingScores: Record<string, number> | null;
   mode: NrListMode;
   renderScope: string;
 }): WebNode[] {
+  const eventsById = new Map(events.map((event) => [event.id, event]));
+
   const activitiesByTarget = new Map<
     string,
     { target: NostrEvent; activities: NrEvent[] }
@@ -1595,12 +1812,14 @@ function groupEventNodes({
         mergedActivityNode({
           alias,
           target: aggregate.target,
+          targetEvent: eventsById.get(target.id) ?? null,
           activities: aggregate.activities,
           profiles,
           localPreference: localPreferences.get(target.id) ?? null,
           authorPreference:
             authorPreferences.get(target.pubkey.toLowerCase()) ?? null,
           sharePrefixes,
+          translationTargetLanguage,
           rankingEvent: rankingScores ? event : null,
           rankingScore: rankingScores?.[event.id] ?? null,
           mode,
@@ -1624,12 +1843,14 @@ function groupEventNodes({
         mergedActivityNode({
           alias,
           target: JSON.parse(event.raw_json) as NostrEvent,
+          targetEvent: event,
           activities: aggregate.activities,
           profiles,
           localPreference: localPreferences.get(event.id) ?? null,
           authorPreference:
             authorPreferences.get(event.pubkey.toLowerCase()) ?? null,
           sharePrefixes,
+          translationTargetLanguage,
           rankingEvent: rankingScores ? event : null,
           rankingScore: rankingScores?.[event.id] ?? null,
           mode,
@@ -1642,11 +1863,12 @@ function groupEventNodes({
           alias,
           event,
           profiles,
-          showReplyContext: mode === 'for-you',
+          showReplyContext: mode === 'timeline' || mode === 'for-you',
           interactions,
           localPreferences,
           authorPreferences,
           sharePrefixes,
+          translationTargetLanguage,
           rankingScore: rankingScores?.[event.id] ?? null,
           mode,
           renderScope,
@@ -1666,6 +1888,7 @@ function groupNode({
   localPreferences,
   authorPreferences,
   sharePrefixes,
+  translationTargetLanguage,
   mode,
 }: GroupNodeProps): WebNode {
   return {
@@ -1674,16 +1897,20 @@ function groupNode({
     renderKey: `nr:${mode}:group:${group.type}:${encodeURIComponent(group.tag)}`,
     props: {
       id: `nr-${group.type}-${group.tag}`,
+      entityKey: tagGroupEntityKey(group.type, group.tag),
       defaultExpanded: false,
       filterText: group.tag,
       filterName: group.tag,
       filterPath: `${group.type}/${group.tag}`,
+      optimisticCountLabel: group.tag,
+      optimisticCountValue: group.unreadCount,
+      optimisticPruneWhenEmpty: true,
     },
     summary: el(
       'row',
       { gap: 'xs', itemAlign: 'center', align: 'between', fill: true },
       [
-        el('text', { weight: 'semibold' }, [
+        el('text', { weight: 'semibold', optimisticCountText: true }, [
           text(countLabel(group.tag, group.unreadCount)),
         ]),
         keyed(
@@ -1701,7 +1928,22 @@ function groupNode({
                 tag: 'menuItem',
                 props: {
                   label: 'Read all',
-                  action: readTagAction(alias, group.type, group.tag, mode),
+                  action: readTagAction(alias, group.type, group.tag),
+                },
+              },
+              {
+                type: 'element',
+                tag: 'menuItem',
+                props: {
+                  label:
+                    group.type === 'topic'
+                      ? 'Add to preferred topics'
+                      : 'Add to preferred moods',
+                  action: addPreferredTagAction({
+                    alias,
+                    type: group.type,
+                    tag: group.tag,
+                  }),
                 },
               },
             ],
@@ -1717,6 +1959,7 @@ function groupNode({
       localPreferences,
       authorPreferences,
       sharePrefixes,
+      translationTargetLanguage,
       rankingScores: null,
       mode,
       renderScope: `${group.type}:${encodeURIComponent(group.tag)}`,
@@ -1734,6 +1977,7 @@ type SectionNodeProps = {
   localPreferences: Map<string, 'like' | 'dislike'>;
   authorPreferences: Map<string, NrAuthorPreferenceValue>;
   sharePrefixes: NostrSharePrefixes;
+  translationTargetLanguage: string;
   mode: NrListMode;
 };
 
@@ -1747,6 +1991,7 @@ function sectionNode({
   localPreferences,
   authorPreferences,
   sharePrefixes,
+  translationTargetLanguage,
   mode,
 }: SectionNodeProps): WebNode {
   const sectionUnreadCount = groups.reduce(
@@ -1763,16 +2008,17 @@ function sectionNode({
       defaultExpanded: true,
       filterName: title,
       filterText: title,
+      optimisticCountLabel: title,
+      optimisticCountValue: sectionUnreadCount,
     },
     summary: el(
       'row',
       { gap: 'xs', itemAlign: 'center', align: 'between', fill: true },
       [
         el('row', { gap: 'xs', itemAlign: 'center' }, [
-          el('text', { weight: 'bold' }, [
+          el('text', { weight: 'bold', optimisticCountText: true }, [
             text(countLabel(title, sectionUnreadCount)),
           ]),
-          badge(String(sectionUnreadCount)),
         ]),
         keyed(
           `nr:${mode}:section:${type}:menu`,
@@ -1809,6 +2055,7 @@ function sectionNode({
               localPreferences,
               authorPreferences,
               sharePrefixes,
+              translationTargetLanguage,
               mode,
             }),
           ),
@@ -1838,6 +2085,52 @@ function settingsAction(alias: string) {
     surface: 'modal' as const,
     modalTitle: 'Nostr radar settings',
     recordInTimeline: false,
+  };
+}
+
+function schedulerAction(alias: string) {
+  return {
+    type: 'command' as const,
+    command: alias,
+    subcommand: 'schedule',
+    arguments: {},
+    options: {},
+    surface: 'modal' as const,
+    modalTitle: 'Nostr radar schedule',
+    recordInTimeline: false,
+  };
+}
+
+type TranslationPostActionProps = {
+  alias: string;
+  content: string;
+  targetLanguage: string;
+};
+
+function translationPostAction({
+  alias,
+  content,
+  targetLanguage,
+}: TranslationPostActionProps) {
+  return {
+    label: 'Translate',
+    ariaLabel: `Translate to ${targetLanguage}`,
+    icon: 'translate' as const,
+    action: {
+      type: 'capability' as const,
+      operation: TranslationV1.operations.translate.id,
+      input: {
+        content,
+        format: 'plain-text',
+        sourceLanguage: null,
+        targetLanguage,
+        context: null,
+      },
+      consumerAlias: alias,
+      selection: 'auto' as const,
+      surface: 'modal' as const,
+      modalTitle: 'Translation',
+    },
   };
 }
 
@@ -1884,7 +2177,7 @@ function listFilterAction(alias: string, mode: NrListMode) {
 
 function listFilterPanel(
   alias: string,
-  mode: 'timeline' | 'profile',
+  mode: 'timeline' | 'for-you' | 'profile',
   selected: NrFeedCategory[],
 ): WebNode {
   return keyed(
@@ -1994,13 +2287,14 @@ function profilePostNode({
   localPreference,
   authorPreference,
   sharePrefixes,
+  translationTargetLanguage,
   mode,
   renderScope,
 }: {
   alias: string;
   event: NostrEvent;
   profiles: Map<string, CachedProfile>;
-  replyContext: ReturnType<typeof profileReference>[];
+  replyContext: WebNostrPostReference[];
   embeds: Record<string, ReturnType<typeof profileReference>>;
   activityHeaders: Array<{
     label: string;
@@ -2016,6 +2310,7 @@ function profilePostNode({
   localPreference: 'like' | 'dislike' | null | undefined;
   authorPreference: NrAuthorPreferenceValue | null;
   sharePrefixes: NostrSharePrefixes | null;
+  translationTargetLanguage: string;
   mode: NrListMode;
   renderScope: string;
 }): WebNode {
@@ -2038,6 +2333,13 @@ function profilePostNode({
         ...(sharePrefixes ? { nostrSharePrefixes: sharePrefixes } : {}),
         nostrCreatedAt: event.created_at,
         nostrContent: event.content,
+        nostrExtraActions: [
+          translationPostAction({
+            alias,
+            content: event.content,
+            targetLanguage: translationTargetLanguage,
+          }),
+        ],
         nostrInlineProfiles: inlineProfiles(event.content, profiles),
         nostrReplyContext: replyContext,
         nostrShowReplyContext: replyContext.length > 0,
@@ -2114,10 +2416,12 @@ function profileReference({
   alias,
   event,
   profiles,
+  translationTargetLanguage,
 }: {
   alias: string;
   event: NostrEvent;
   profiles: Map<string, CachedProfile>;
+  translationTargetLanguage: string;
 }) {
   const profile = profileForPubkey({ profiles, pubkey: event.pubkey });
 
@@ -2128,10 +2432,10 @@ function profileReference({
     pubkey: event.pubkey,
     kind: event.kind,
     npub: npubForPubkey(event.pubkey),
-    authorName: profile?.displayName,
-    authorUsername: profile?.name,
-    authorPicture: profile?.picture,
-    authorAbout: profile?.about,
+    authorName: profile?.displayName ?? undefined,
+    authorUsername: profile?.name ?? undefined,
+    authorPicture: profile?.picture ?? undefined,
+    authorAbout: profile?.about ?? undefined,
     relayHints: [],
     createdAt: event.created_at,
     content: event.content,
@@ -2139,6 +2443,13 @@ function profileReference({
     replyAction: replyNostrEventAction({ alias, event, profile }),
     repostAction: repostNostrEventAction({ alias, event, profile }),
     showActions: true,
+    trailingActions: [
+      translationPostAction({
+        alias,
+        content: event.content,
+        targetLanguage: translationTargetLanguage,
+      }),
+    ],
     inlineProfiles: inlineProfiles(event.content, profiles),
   };
 }
@@ -2148,6 +2459,7 @@ type ProfileReferenceWithEmbedsProps = {
   event: NostrEvent;
   profiles: Map<string, CachedProfile>;
   relatedEvents: Map<string, NostrEvent>;
+  translationTargetLanguage: string;
 };
 
 function profileReferenceWithEmbeds({
@@ -2155,9 +2467,15 @@ function profileReferenceWithEmbeds({
   event,
   profiles,
   relatedEvents,
+  translationTargetLanguage,
 }: ProfileReferenceWithEmbedsProps) {
   return {
-    ...profileReference({ alias, event, profiles }),
+    ...profileReference({
+      alias,
+      event,
+      profiles,
+      translationTargetLanguage,
+    }),
     embeddedReferences: [
       ...extractEventReferences(event.content).flatMap((reference) => {
         const embeddedEvent = relatedEvents.get(reference.id);
@@ -2165,7 +2483,12 @@ function profileReferenceWithEmbeds({
         return embeddedEvent
           ? [
               {
-                ...profileReference({ alias, event: embeddedEvent, profiles }),
+                ...profileReference({
+                  alias,
+                  event: embeddedEvent,
+                  profiles,
+                  translationTargetLanguage,
+                }),
                 token: reference.token,
               },
             ]
@@ -2182,6 +2505,7 @@ function profileEventNode({
   profiles,
   authorPreferences,
   sharePrefixes,
+  translationTargetLanguage,
   mode,
   renderScope,
 }: {
@@ -2190,10 +2514,15 @@ function profileEventNode({
   profiles: Map<string, CachedProfile>;
   authorPreferences: Map<string, NrAuthorPreferenceValue>;
   sharePrefixes: NostrSharePrefixes;
+  translationTargetLanguage: string;
   mode: NrListMode;
   renderScope: string;
 }): WebNode {
   const { event, referencedEvents } = profileEvent;
+
+  const referencedEventsById = new Map(
+    referencedEvents.map((reference) => [reference.id, reference]),
+  );
 
   let reposted: NostrEvent | null = null;
 
@@ -2206,15 +2535,22 @@ function profileEventNode({
     }
   }
 
+  if (reposted === null && (event.kind === 6 || event.kind === 16)) {
+    const targetEdge = parseEventReferences(event).find(
+      (edge) => edge.role === 'repost-target' && edge.target.type === 'event',
+    );
+
+    reposted =
+      targetEdge?.target.type === 'event'
+        ? (referencedEventsById.get(targetEdge.target.eventId) ?? null)
+        : null;
+  }
+
   const displayEvent = reposted ?? event;
   const category = categoryForNrEvent(event);
 
-  const referencedEventsById = new Map(
-    referencedEvents.map((reference) => [reference.id, reference]),
-  );
-
   const activityHeader =
-    event.kind === 6
+    event.kind === 6 || event.kind === 16
       ? activityHeaderFor({ label: 'Reposted', event, profiles })
       : event.kind === 7
         ? activityHeaderFor({
@@ -2225,20 +2561,28 @@ function profileEventNode({
         : null;
 
   const replyContext =
-    category === 'replies'
-      ? extractNip10References(event)
-          .map((reference) => referencedEventsById.get(reference.id))
-          .filter(
-            (reference): reference is NostrEvent => reference !== undefined,
-          )
-          .map((reference) =>
-            profileReferenceWithEmbeds({
-              alias,
-              event: reference,
-              profiles,
-              relatedEvents: referencedEventsById,
-            }),
-          )
+    category === 'replies' || reposted !== null
+      ? threadEventReferences(displayEvent).map((reference) => {
+          const contextEvent = referencedEventsById.get(reference.id);
+
+          return contextEvent
+            ? {
+                ...profileReferenceWithEmbeds({
+                  alias,
+                  event: contextEvent,
+                  profiles,
+                  relatedEvents: referencedEventsById,
+                  translationTargetLanguage,
+                }),
+                resolutionStatus: 'resolved' as const,
+              }
+            : unresolvedReplyReference({
+                alias,
+                id: reference.id,
+                relay: reference.relay,
+                mode,
+              });
+        })
       : [];
 
   const embeds = Object.fromEntries([
@@ -2257,6 +2601,7 @@ function profileEventNode({
                   event,
                   profiles,
                   relatedEvents: referencedEventsById,
+                  translationTargetLanguage,
                 }),
               ],
             ]
@@ -2288,6 +2633,7 @@ function profileEventNode({
               authorPreference:
                 authorPreferences.get(reference.pubkey.toLowerCase()) ?? null,
               sharePrefixes: null,
+              translationTargetLanguage,
               mode,
               renderScope: `${renderScope}:source:${event.id}:reference:${reference.id}`,
             }),
@@ -2306,6 +2652,7 @@ function profileEventNode({
                 authorPreferences.get(displayEvent.pubkey.toLowerCase()) ??
                 null,
               sharePrefixes,
+              translationTargetLanguage,
               mode,
               renderScope: `${renderScope}:source:${event.id}`,
             }),
@@ -2321,6 +2668,7 @@ function activityEventNode({
   profiles,
   authorPreferences,
   sharePrefixes,
+  translationTargetLanguage,
   mode,
   renderScope,
 }: {
@@ -2329,6 +2677,7 @@ function activityEventNode({
   profiles: Map<string, CachedProfile>;
   authorPreferences: Map<string, NrAuthorPreferenceValue>;
   sharePrefixes: NostrSharePrefixes;
+  translationTargetLanguage: string;
   mode: NrListMode;
   renderScope: string;
 }): WebNode {
@@ -2352,6 +2701,7 @@ function activityEventNode({
     profiles,
     authorPreferences,
     sharePrefixes,
+    translationTargetLanguage,
     mode,
     renderScope,
   });
@@ -2360,10 +2710,14 @@ function activityEventNode({
 export function renderNrListWeb({
   alias,
   listData,
+  schedulerResource,
   profiles,
 }: RenderNrListWebProps): WebNodeRoot {
   const localPreferences = new Map<string, 'like' | 'dislike'>();
   const sharePrefixes = nrSharePrefixes(listData.settings);
+
+  const translationTargetLanguage =
+    listData.settings.translationTargetLanguage ?? 'en';
 
   const authorPreferences = new Map<string, NrAuthorPreferenceValue>(
     listData.authorPreferences.map((preference) => [
@@ -2396,7 +2750,7 @@ export function renderNrListWeb({
       `nr:${listData.mode}:root`,
       el('stack', { gap: 'sm' }, [
         listModeSwitch(alias, listData.mode),
-        ...(listData.mode === 'timeline' || listData.mode === 'profile'
+        ...(listData.mode !== 'archive'
           ? [listFilterPanel(alias, listData.mode, listData.selectedCategories)]
           : []),
         {
@@ -2409,7 +2763,7 @@ export function renderNrListWeb({
             filterable: true,
             filterPlaceholder: 'Filter tags, moods, posts',
             toolbarActions: [
-              ...(listData.mode === 'timeline' || listData.mode === 'profile'
+              ...(listData.mode !== 'archive'
                 ? [
                     {
                       label: 'Filter kinds',
@@ -2421,6 +2775,14 @@ export function renderNrListWeb({
                     },
                   ]
                 : []),
+              {
+                label: schedulerResource
+                  ? 'Show scheduled job'
+                  : 'Schedule fetch',
+                icon: 'log',
+                action: schedulerAction(alias),
+                visibleOnSurfaces: ['timeline', 'modal', 'dock'],
+              },
               {
                 label: 'Settings',
                 icon: 'settings',
@@ -2446,6 +2808,7 @@ export function renderNrListWeb({
                       profiles,
                       authorPreferences,
                       sharePrefixes,
+                      translationTargetLanguage,
                       mode: 'profile',
                       renderScope: 'profile',
                     }),
@@ -2466,6 +2829,7 @@ export function renderNrListWeb({
                     localPreferences,
                     authorPreferences,
                     sharePrefixes,
+                    translationTargetLanguage,
                     rankingScores: listData.forYouScores,
                     mode: 'for-you',
                     renderScope: 'for-you',
@@ -2489,6 +2853,7 @@ export function renderNrListWeb({
                     localPreferences,
                     authorPreferences,
                     sharePrefixes,
+                    translationTargetLanguage,
                     mode: listData.mode,
                   }),
                   sectionNode({
@@ -2501,6 +2866,7 @@ export function renderNrListWeb({
                     localPreferences,
                     authorPreferences,
                     sharePrefixes,
+                    translationTargetLanguage,
                     mode: listData.mode,
                   }),
                 ]),

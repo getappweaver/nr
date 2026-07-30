@@ -12,6 +12,7 @@ import { markDefinition } from './commands/mark/definition';
 import { parseDefinition } from './commands/parse/definition';
 import { reevaluateDefinition } from './commands/reevaluate/definition';
 import { settingsDefinition } from './commands/settings/definition';
+import { scheduleDefinition } from './commands/schedule/definition';
 import { taxonomyDefinition } from './commands/taxonomy/definition';
 
 export const commandDefinition = (
@@ -32,6 +33,7 @@ export const commandDefinition = (
     markDefinition(prefix, alias),
     reevaluateDefinition(prefix, alias),
     settingsDefinition(prefix, alias),
+    scheduleDefinition(prefix, alias),
     contextDefinition(prefix, alias),
     taxonomyDefinition(),
     fetchLatestDefinition(prefix, alias),

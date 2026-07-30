@@ -57,6 +57,20 @@ export const settingsDefinition = (
       required: false,
     },
     {
+      name: 'translation_target_language',
+      flag: '--translation-target-language',
+      summary: 'BCP 47 target language for post translation (default: en).',
+      kind: 'string',
+      required: false,
+    },
+    {
+      name: 'hourly_scheduler',
+      flag: '--hourly-scheduler',
+      summary: 'Create an hourly scheduler to fetch and evaluate Nostr posts.',
+      kind: 'boolean',
+      required: false,
+    },
+    {
       name: 'relay_fetch_concurrency',
       flag: '--relay-fetch-concurrency',
       summary: 'Maximum relay-author groups fetched concurrently.',

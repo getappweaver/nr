@@ -74,19 +74,33 @@ export const fetchCoverageStylesheet = {
   color: #000;
 }
 
-.nr-fetch-bucket--fetched {
+.nr-fetch-bucket:disabled {
+  background: color-mix(in srgb, var(--color-text-muted) 18%, transparent);
+  color: var(--color-text-muted);
+  cursor: default;
+}
+
+.nr-fetch-bucket--fetched,
+.nr-fetch-bucket--fetched:disabled {
   background: color-mix(in srgb, var(--color-success) 45%, transparent);
   color: var(--color-text);
 }
 
-.nr-fetch-bucket--partial {
+.nr-fetch-bucket--partial,
+.nr-fetch-bucket--partial:disabled {
   background: color-mix(in srgb, var(--color-warning) 55%, transparent);
   color: #000;
 }
 
-.nr-fetch-bucket--failed {
+.nr-fetch-bucket--failed,
+.nr-fetch-bucket--failed:disabled {
   background: color-mix(in srgb, var(--color-danger) 55%, transparent);
   color: var(--color-text);
+}
+
+.nr-fetch-bucket.is-background-command-active:disabled {
+  outline: 2px solid #f97316;
+  outline-offset: -2px;
 }
 `,
 };
@@ -254,6 +268,10 @@ function fetchBoundaryLabels(): string[] {
   );
 }
 
+function fetchBucketId(bucket: FetchBucket): string {
+  return `nr-fetch-bucket-${bucket.since}-${bucket.until}`;
+}
+
 function fetchBucketAction(alias: string, bucket: FetchBucket) {
   return {
     type: 'command' as const,
@@ -276,6 +294,7 @@ function fetchBucketAction(alias: string, bucket: FetchBucket) {
     },
     clientStatus: {
       background: true,
+      activeTargetId: fetchBucketId(bucket),
       pending: 'Fetching and evaluating Nostr posts…',
       success: 'Evaluation completed. Refresh Nostr radar to see new content.',
       successOutput: 'appendText',
@@ -329,6 +348,7 @@ export function fetchCoverageBar(alias: string, listData: NrListData): WebNode {
           el(
             'button',
             {
+              id: fetchBucketId(bucket),
               label: fetchBucketTitle(bucket),
               className: `nr-fetch-bucket nr-fetch-bucket--${bucket.status}`,
               action: fetchBucketAction(alias, bucket),

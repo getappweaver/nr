@@ -1,10 +1,8 @@
 ---
-direct_hash: e9aa6f91280f048d3825edc9da41091a3a21f70930da0f89cea69ca3124051ae
-subtree_hash: 28780babe49a737a5a25950c98115c6748a9c05444710d8a47a26ae4efa728d7
-enriched: true
-enriched_version: 1
+direct_hash: b8250d8a0a5b0296897dca131d75e7e2e3e542cff4ab4c1d10a82d11aacf96c6
+subtree_hash: 7604bd9621fb462f1312457aa0cf56784ecbd55a15184f148a95a2ecdb09f693
 files:
-  adapter-params.ts: 0e0e887398eca7e1bdc609ee4569e0ea8445d7512d45c449067b619805ae3c9e
+  adapter-params.ts: 8b0dcf48f78bb1ecd622efb6c696ca7037c22290b016bc01376446ae47121757
 children:
 ---
 

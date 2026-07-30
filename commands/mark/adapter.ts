@@ -102,11 +102,22 @@ export async function adaptMarkCommand(
     return usage(params.prefix, params.alias);
   }
 
-  let event = markEventState({
-    db: params.db,
-    eventId,
-    state,
-  });
+  const markEvent = () =>
+    markEventState({
+      db: params.db,
+      eventId,
+      state,
+    });
+
+  let event =
+    state === 'read' && params.storedCtx.monitoring.currentContext()
+      ? await params.storedCtx.monitoring.withSpan({
+          name: 'nr.read.db',
+          attributes: { eventId },
+          parent: null,
+          run: markEvent,
+        })
+      : markEvent();
 
   if (!event) {
     const rawEvent = parseEventJson(params.parsed.options.event_json);

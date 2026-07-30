@@ -15,6 +15,7 @@ import {
 import type { WebHandlerResult } from '@src/web/ui-schema';
 
 import { handleNrAdapter } from './adapter';
+import { aiDefinition } from './ai';
 import { getNrCommandDefinition, getNrHelpLines } from './commands/help/module';
 import { openDb } from './db';
 
@@ -74,6 +75,7 @@ export const NrPlugin: BotPlugin = {
     `${prefix}${helpAlias} help [topic] — structured help`,
     ...getNrHelpLines(prefix, helpAlias),
   ],
+  aiDefinition,
   commandDefinition: (prefix: string, pluginAlias: string) =>
     getNrCommandDefinition(prefix, pluginAlias),
 };

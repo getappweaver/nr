@@ -4,7 +4,7 @@ import type { Database } from 'bun:sqlite';
 
 import { createBackend } from '@src/backends/factory';
 import { getOutputString } from '@src/backends/types';
-import type { PluginContext, RunAgentFn } from '@src/core/plugin';
+import type { RunAgentFn } from '@src/core/plugin';
 import { parseRelayUrls } from '@src/env';
 
 import {
@@ -22,6 +22,7 @@ import { buildNrPluginContextText } from './context';
 import { listNrAudienceReactions } from './db';
 import { fetchReferencedEvents } from './references';
 import { getNrSettings } from './settings';
+import type { NrRuntimeContext } from './types/adapter-params';
 
 type ClassifyEventWithNrAiProps = {
   db: Database;
@@ -30,7 +31,7 @@ type ClassifyEventWithNrAiProps = {
   threadContextEvents: NostrEvent[];
   referencedEvents: NostrEvent[] | null;
   audienceReactions: NrAudienceReaction[];
-  storedCtx: PluginContext;
+  storedCtx: NrRuntimeContext;
   runAgent: RunAgentFn | null;
   abortSignal: AbortSignal | null;
 };

@@ -4,12 +4,7 @@
 
 import type { Database } from 'bun:sqlite';
 
-import type {
-  PluginContext,
-  PluginIdentity,
-  RunAgentFn,
-  SendReplyFn,
-} from '@src/core/plugin';
+import type { PluginIdentity, RunAgentFn, SendReplyFn } from '@src/core/plugin';
 import type { MessageSource } from '@src/messaging';
 import { parseCliInput, parseStructuredInput } from '@src/system/parser-cli';
 import type { WebHandlerResult } from '@src/web/ui-schema';
@@ -28,8 +23,12 @@ import { adaptParseCommand } from './commands/parse/adapter';
 import { adaptReadCommand } from './commands/read/adapter';
 import { adaptReevaluateCommand } from './commands/reevaluate/adapter';
 import { adaptSettingsCommand } from './commands/settings/adapter';
+import { adaptScheduleCommand } from './commands/schedule/adapter';
 import { adaptTaxonomyCommand } from './commands/taxonomy/adapter';
-import type { NrCommandAdapterParams } from './types/adapter-params';
+import type {
+  NrCommandAdapterParams,
+  NrRuntimeContext,
+} from './types/adapter-params';
 
 type NrSubcommand =
   | 'help'
@@ -39,6 +38,7 @@ type NrSubcommand =
   | 'reevaluate'
   | 'reclassify'
   | 'settings'
+  | 'schedule'
   | 'context'
   | 'taxonomy'
   | 'fetch-latest'
@@ -69,6 +69,7 @@ const subcommandAdapters: Record<NrSubcommand, NrCommandAdapter> = {
   reevaluate: adaptReevaluateCommand,
   reclassify: adaptReevaluateCommand,
   settings: adaptSettingsCommand,
+  schedule: adaptScheduleCommand,
   context: adaptContextCommand,
   taxonomy: adaptTaxonomyCommand,
   'fetch-latest': adaptFetchLatestCommand,
@@ -109,6 +110,7 @@ function isNrSubcommand(value: string): value is NrSubcommand {
     value === 'reevaluate' ||
     value === 'reclassify' ||
     value === 'settings' ||
+    value === 'schedule' ||
     value === 'context' ||
     value === 'taxonomy' ||
     value === 'fetch-latest' ||
@@ -129,7 +131,7 @@ type HandleNrAdapterProps = {
   db: Database;
   source: MessageSource;
   identity: PluginIdentity;
-  storedCtx: PluginContext;
+  storedCtx: NrRuntimeContext;
   runAgent: RunAgentFn | null;
   sendReply: SendReplyFn | null;
   jsonPayload: unknown;

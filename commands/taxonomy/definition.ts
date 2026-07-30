@@ -17,10 +17,10 @@ export const taxonomyDefinition = (): SubcommandDefinition => ({
     {
       name: 'mode',
       flag: '--mode',
-      summary: 'Editor mode: edit or save.',
+      summary: 'Editor mode: edit, save, or add.',
       kind: 'string',
       required: false,
-      choices: ['edit', 'save'],
+      choices: ['edit', 'save', 'add'],
     },
     {
       name: 'active_tags',
@@ -41,5 +41,6 @@ export const taxonomyDefinition = (): SubcommandDefinition => ({
   examples: [
     '/nr taxonomy --type topic',
     '/nr taxonomy --type mood --mode save --active-tags funny --new-tag serious',
+    '/nr taxonomy --type topic --mode add --new-tag nostr',
   ],
 });
