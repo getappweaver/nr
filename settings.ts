@@ -14,6 +14,7 @@ export type NrSettings = {
   eventSharePrefix: string;
   profileSharePrefix: string;
   translationTargetLanguage: string | null;
+  filterToLatestFetchedSlotOnOpen: boolean;
   relayFetchConcurrency: number;
   aiEvaluationConcurrency: number;
 };
@@ -21,6 +22,7 @@ export type NrSettings = {
 export const DEFAULT_NR_SHARE_PREFIX = 'nostr://';
 export const DEFAULT_NR_RELAY_FETCH_CONCURRENCY = 3;
 export const DEFAULT_NR_AI_EVALUATION_CONCURRENCY = 2;
+export const DEFAULT_NR_FILTER_TO_LATEST_FETCHED_SLOT_ON_OPEN = true;
 
 export const DEFAULT_NR_CLASSIFICATION_INSTRUCTIONS = `Classify this Nostr event for a personal unread radar.
 
@@ -62,6 +64,7 @@ const SETTINGS_KEYS = {
   eventSharePrefix: 'event_share_prefix',
   profileSharePrefix: 'profile_share_prefix',
   translationTargetLanguage: 'translation_target_language',
+  filterToLatestFetchedSlotOnOpen: 'filter_to_latest_fetched_slot_on_open',
   relayFetchConcurrency: 'relay_fetch_concurrency',
   aiEvaluationConcurrency: 'ai_evaluation_concurrency',
 } as const;
@@ -124,6 +127,18 @@ function aiEvaluationConcurrency(value: string | null): number {
     : DEFAULT_NR_AI_EVALUATION_CONCURRENCY;
 }
 
+function booleanSetting(value: string | null, fallback: boolean): boolean {
+  if (value === 'true') {
+    return true;
+  }
+
+  if (value === 'false') {
+    return false;
+  }
+
+  return fallback;
+}
+
 export function nrSharePrefixes(settings: NrSettings): NostrSharePrefixes {
   return {
     nevent: settings.eventSharePrefix,
@@ -148,6 +163,10 @@ export function getNrSettings(db: Database): NrSettings {
       db,
       SETTINGS_KEYS.translationTargetLanguage,
     ),
+    filterToLatestFetchedSlotOnOpen: booleanSetting(
+      getSetting(db, SETTINGS_KEYS.filterToLatestFetchedSlotOnOpen),
+      DEFAULT_NR_FILTER_TO_LATEST_FETCHED_SLOT_ON_OPEN,
+    ),
     relayFetchConcurrency: relayFetchConcurrency(
       getSetting(db, SETTINGS_KEYS.relayFetchConcurrency),
     ),
@@ -165,6 +184,7 @@ type SaveNrSettingsProps = {
   eventSharePrefix: string;
   profileSharePrefix: string;
   translationTargetLanguage: string | null;
+  filterToLatestFetchedSlotOnOpen: boolean;
   relayFetchConcurrency: number;
   aiEvaluationConcurrency: number;
 };
@@ -177,6 +197,7 @@ export function saveNrSettings({
   eventSharePrefix,
   profileSharePrefix,
   translationTargetLanguage,
+  filterToLatestFetchedSlotOnOpen,
   relayFetchConcurrency,
   aiEvaluationConcurrency,
 }: SaveNrSettingsProps): NrSettings {
@@ -216,6 +237,12 @@ export function saveNrSettings({
 
   setSetting(
     db,
+    SETTINGS_KEYS.filterToLatestFetchedSlotOnOpen,
+    String(filterToLatestFetchedSlotOnOpen),
+  );
+
+  setSetting(
+    db,
     SETTINGS_KEYS.relayFetchConcurrency,
     String(relayFetchConcurrency),
   );
@@ -236,6 +263,7 @@ export function resetNrSettings(db: Database): NrSettings {
   deleteSetting(db, SETTINGS_KEYS.eventSharePrefix);
   deleteSetting(db, SETTINGS_KEYS.profileSharePrefix);
   deleteSetting(db, SETTINGS_KEYS.translationTargetLanguage);
+  deleteSetting(db, SETTINGS_KEYS.filterToLatestFetchedSlotOnOpen);
   deleteSetting(db, SETTINGS_KEYS.relayFetchConcurrency);
   deleteSetting(db, SETTINGS_KEYS.aiEvaluationConcurrency);
 

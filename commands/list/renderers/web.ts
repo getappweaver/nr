@@ -9,6 +9,7 @@ import type {
   WebNode,
   WebNodeRoot,
   WebNostrPostReference,
+  WebTreeTimeRange,
 } from '@src/web/ui-schema';
 
 import { parseNostrEventArray } from '../../../nostr-resolution';
@@ -29,6 +30,7 @@ import {
   type NrEvent,
   type NrListData,
   type NrListMode,
+  type NrListTimeRange,
   type NrProfileEvent,
   type NrTagGroup,
 } from '../../shared/types';
@@ -39,9 +41,21 @@ import {
   categoryForNrEvent,
   type NrFeedCategory,
 } from '../categories';
+import {
+  nrListCommandAction,
+  nrListCommandOptions,
+  nrListTimeRangeKey,
+} from '../list-options';
 
-import { fetchCoverageBar, fetchCoverageStylesheet } from './fetch-coverage';
-import { authorPreferenceActions } from './profile';
+import {
+  fetchCoverageBar,
+  fetchCoverageStylesheet,
+  NR_TIMELINE_TIME_FILTER_GROUP,
+} from './fetch-coverage';
+import {
+  authorPreferenceActions,
+  authorPreferenceActionsReadAction,
+} from './profile';
 
 const NR_LIST_FILTER_REVEAL_ID = 'nr-list-filter';
 
@@ -392,18 +406,15 @@ function replyNostrEventAction({
   };
 }
 
-function badge(value: string): WebNode {
-  return el('badge', { size: 'sm', tone: 'muted' }, [text(value)]);
-}
-
-function forYouMetadata(event: NrEvent, score: number): WebNode {
+function eventSignalMetadata(event: NrEvent, score: number | null): WebNode {
   const topics = event.topics.length > 0 ? event.topics.join(', ') : '(none)';
   const moods = event.moods.length > 0 ? event.moods.join(', ') : '(none)';
+  const scoreText = score === null ? '' : ` . Score: ${score.toFixed(2)}`;
 
   return el(
     'text',
     { className: 'nr-for-you-metadata', size: 'sm', tone: 'muted' },
-    [text(`Topics: ${topics} . Moods: ${moods} . Score: ${score.toFixed(2)}`)],
+    [text(`Topics: ${topics} . Moods: ${moods}${scoreText}`)],
   );
 }
 
@@ -417,10 +428,6 @@ function summaryNodes(summary: string): WebNode[] {
         ]),
       ]
     : [];
-}
-
-function countLabel(label: string, count: number): string {
-  return `${label} (${count})`;
 }
 
 function optimisticCommandAction({
@@ -481,7 +488,6 @@ function markAction({ alias, eventId, state, mode }: MarkActionProps) {
         type: 'removeEntity',
         entityKey: entityKey(eventId),
         pruneEmptyParents: true,
-        updateCounts: true,
       },
     ],
     command: {
@@ -629,7 +635,6 @@ function markRawEventAction({
         type: 'removeEntity',
         entityKey: entityKey(event.id),
         pruneEmptyParents: true,
-        updateCounts: true,
       },
     ],
     command: {
@@ -649,23 +654,40 @@ function markRawEventAction({
   });
 }
 
-function readTagAction(alias: string, type: 'topic' | 'mood', tag: string) {
-  return optimisticCommandAction({
-    mutations: [
-      {
-        type: 'removeEntity',
-        entityKey: tagGroupEntityKey(type, tag),
-        pruneEmptyParents: true,
-        updateCounts: true,
-      },
-    ],
-    command: {
+type ReadTagActionProps = {
+  alias: string;
+  type: 'topic' | 'mood';
+  tag: string;
+  mode: NrListMode;
+  selectedTimeRanges: NrListTimeRange[];
+};
+
+function readTagAction({
+  alias,
+  type,
+  tag,
+  mode,
+  selectedTimeRanges,
+}: ReadTagActionProps) {
+  return {
+    type: 'command' as const,
+    command: alias,
+    subcommand: 'mark',
+    arguments: {},
+    options: { type, tag, read: true },
+    recordInTimeline: false,
+    pendingUi: { presentation: 'entity' as const, label: 'Marking read...' },
+    refresh: {
       command: alias,
-      subcommand: 'mark',
+      subcommand: 'list',
       arguments: {},
-      options: { type, tag, read: true },
+      options: {
+        ...nrListCommandOptions({ mode, selectedTimeRanges }),
+        local_mutation: true,
+      },
+      recordInTimeline: false,
     },
-  });
+  };
 }
 
 type AddPreferredTagActionProps = {
@@ -747,7 +769,7 @@ function eventActionsMenu(
               type: 'element' as const,
               tag: 'menuItem' as const,
               props: {
-                label: 'Open in nostr',
+                label: 'Open event',
                 href: openUrl,
                 external: true,
               },
@@ -836,7 +858,7 @@ function referencedEventActionsMenu({
               type: 'element' as const,
               tag: 'menuItem' as const,
               props: {
-                label: 'Open in nostr',
+                label: 'Open event',
                 href: openUrl,
                 external: true,
               },
@@ -983,10 +1005,15 @@ function eventFilterText({ event, profiles }: EventFilterTextProps): string {
     .join(' ');
 }
 
-function inlineProfiles(
-  content: string,
-  profiles: Map<string, CachedProfile>,
-): NonNullable<WebNostrPostReference['inlineProfiles']> {
+function inlineProfiles({
+  content,
+  profiles,
+  sharePrefixes,
+}: {
+  content: string;
+  profiles: Map<string, CachedProfile>;
+  sharePrefixes: NostrSharePrefixes;
+}): NonNullable<WebNostrPostReference['inlineProfiles']> {
   const inline: NonNullable<WebNostrPostReference['inlineProfiles']> = {};
 
   for (const reference of extractProfileReferences(content)) {
@@ -1000,6 +1027,7 @@ function inlineProfiles(
       authorPicture: profile?.picture ?? undefined,
       authorAbout: profile?.about ?? undefined,
       relayHints: [],
+      sharePrefixes,
     };
   }
 
@@ -1009,9 +1037,11 @@ function inlineProfiles(
 function addressReferences({
   content,
   profiles,
+  sharePrefixes,
 }: {
   content: string;
   profiles: Map<string, CachedProfile>;
+  sharePrefixes: NostrSharePrefixes;
 }) {
   return extractAddressReferences(content).map((reference) => {
     const profile = profiles.get(reference.pubkey.toLowerCase());
@@ -1024,6 +1054,7 @@ function addressReferences({
       kind: reference.kind,
       npub: npubForPubkey(reference.pubkey),
       relayHints: reference.relays,
+      sharePrefixes,
       authorName: profile?.displayName ?? undefined,
       authorUsername: profile?.name ?? undefined,
       authorPicture: profile?.picture ?? undefined,
@@ -1044,6 +1075,7 @@ function nostrEmbeds({
   profiles,
   interactions,
   translationTargetLanguage,
+  sharePrefixes,
   mode,
 }: {
   alias: string;
@@ -1051,6 +1083,7 @@ function nostrEmbeds({
   profiles: Map<string, CachedProfile>;
   interactions: NrInteraction[];
   translationTargetLanguage: string;
+  sharePrefixes: NostrSharePrefixes;
   mode: NrListMode;
 }) {
   const eventsById = new Map(
@@ -1085,6 +1118,7 @@ function nostrEmbeds({
                         event: nestedEvent,
                         profiles,
                         translationTargetLanguage,
+                        sharePrefixes,
                       }),
                       token: nestedReference.token,
                     },
@@ -1092,7 +1126,11 @@ function nostrEmbeds({
                 : [];
             },
           ),
-          ...addressReferences({ content: referencedEvent.content, profiles }),
+          ...addressReferences({
+            content: referencedEvent.content,
+            profiles,
+            sharePrefixes,
+          }),
         ]
       : [];
 
@@ -1151,8 +1189,13 @@ function nostrEmbeds({
       reposted: flags.reposted,
       quoted: flags.quoted,
       showActions: referencedEvent ? true : false,
+      sharePrefixes,
       inlineProfiles: referencedEvent
-        ? inlineProfiles(referencedEvent.content, profiles)
+        ? inlineProfiles({
+            content: referencedEvent.content,
+            profiles,
+            sharePrefixes,
+          })
         : undefined,
       label: referencedEvent ? 'Quoted note' : 'Referenced note',
     };
@@ -1161,6 +1204,7 @@ function nostrEmbeds({
   for (const reference of addressReferences({
     content: event.content,
     profiles,
+    sharePrefixes,
   })) {
     embeds[reference.token] = reference;
   }
@@ -1175,6 +1219,7 @@ type ThreadContextReferencesProps = {
   interactions: NrInteraction[];
   localPreferences: Map<string, 'like' | 'dislike'>;
   translationTargetLanguage: string;
+  sharePrefixes: NostrSharePrefixes;
   mode: NrListMode;
 };
 
@@ -1235,6 +1280,7 @@ function threadContextReferences({
   interactions,
   localPreferences,
   translationTargetLanguage,
+  sharePrefixes,
   mode,
 }: ThreadContextReferencesProps) {
   const context = threadContextEvents(event);
@@ -1288,6 +1334,7 @@ function threadContextReferences({
       authorPicture: profile?.picture ?? undefined,
       authorAbout: profile?.about ?? undefined,
       relayHints: [],
+      sharePrefixes,
       createdAt: contextEvent.created_at,
       content: contextEvent.content,
       readAction: markRawEventAction({
@@ -1332,7 +1379,11 @@ function threadContextReferences({
           preference: localPreferences.get(contextEvent.id) ?? null,
         }),
       ],
-      inlineProfiles: inlineProfiles(contextEvent.content, profiles),
+      inlineProfiles: inlineProfiles({
+        content: contextEvent.content,
+        profiles,
+        sharePrefixes,
+      }),
       embeddedReferences: [
         ...extractEventReferences(contextEvent.content).flatMap((reference) => {
           const embeddedEvent = relatedEvents.get(reference.id);
@@ -1345,13 +1396,18 @@ function threadContextReferences({
                     event: embeddedEvent,
                     profiles,
                     translationTargetLanguage,
+                    sharePrefixes,
                   }),
                   token: reference.token,
                 },
               ]
             : [];
         }),
-        ...addressReferences({ content: contextEvent.content, profiles }),
+        ...addressReferences({
+          content: contextEvent.content,
+          profiles,
+          sharePrefixes,
+        }),
       ],
     };
   });
@@ -1446,11 +1502,12 @@ export function eventNode({
     props: {
       id: `nr-event-${event.id}`,
       entityKey: entityKey(event.id),
-      className: `nr-list-event${rankingScore === null ? '' : ' nr-for-you-event'}`,
-      defaultExpanded: true,
+      className: `nr-list-event${mode === 'for-you' ? ' nr-for-you-event' : ''}`,
+      defaultExpanded: false,
       filterText,
       filterName: event.summary || event.id,
       filterPath: `event/${event.id}`,
+      filterTimestamps: [event.event_created_at],
     },
     summary: el('row', { gap: 'xs', align: 'between', itemAlign: 'start' }, [
       keyed(
@@ -1458,7 +1515,7 @@ export function eventNode({
         eventActionsMenu(alias, event, mode, sharePrefixes),
       ),
       el('stack', { gap: 'xs', fill: true }, [
-        ...(rankingScore === null ? [] : [forYouMetadata(event, rankingScore)]),
+        eventSignalMetadata(event, rankingScore),
         ...summaryNodes(event.summary),
         keyed(
           `nr:${renderScope}:event:${event.id}:post`,
@@ -1478,7 +1535,11 @@ export function eventNode({
               nostrAuthorAbout: post.authorAbout ?? undefined,
               nostrCreatedAt: post.createdAt,
               nostrContent: post.content,
-              nostrInlineProfiles: inlineProfiles(event.content, profiles),
+              nostrInlineProfiles: inlineProfiles({
+                content: event.content,
+                profiles,
+                sharePrefixes,
+              }),
               nostrPermalink: nevent ? `nostr:${nevent}` : undefined,
               nostrEmbeds: nostrEmbeds({
                 alias,
@@ -1486,6 +1547,7 @@ export function eventNode({
                 profiles,
                 interactions: eventInteractions,
                 translationTargetLanguage,
+                sharePrefixes,
                 mode,
               }),
               nostrReplyContext: threadContextReferences({
@@ -1495,6 +1557,7 @@ export function eventNode({
                 interactions: eventInteractions,
                 localPreferences,
                 translationTargetLanguage,
+                sharePrefixes,
                 mode,
               }),
               nostrShowReplyContext: showReplyContext,
@@ -1523,6 +1586,11 @@ export function eventNode({
                 preference:
                   authorPreferences.get(event.pubkey.toLowerCase()) ?? null,
               }),
+              nostrProfileActionsReadAction: authorPreferenceActionsReadAction({
+                alias,
+                pubkey: event.pubkey,
+                mode,
+              }),
               nostrArchiveAction: archiveAction(alias, event, mode),
               nostrArchived: event.archived_at !== null,
               nostrLikeAction: likeEventAction(alias, event),
@@ -1536,14 +1604,6 @@ export function eventNode({
             [],
           ),
         ),
-        ...(rankingScore === null
-          ? [
-              el('row', { gap: 'xs' }, [
-                ...event.topics.map((tag) => badge(`#${tag}`)),
-                ...event.moods.map((tag) => badge(tag)),
-              ]),
-            ]
-          : []),
       ]),
     ]),
     children: [],
@@ -1559,7 +1619,9 @@ type GroupNodeProps = {
   authorPreferences: Map<string, NrAuthorPreferenceValue>;
   sharePrefixes: NostrSharePrefixes;
   translationTargetLanguage: string;
+  rankingScores: Record<string, number>;
   mode: NrListMode;
+  selectedTimeRanges: NrListTimeRange[];
 };
 
 function activityTarget(event: NrEvent): NostrEvent | null {
@@ -1641,15 +1703,18 @@ function mergedActivityNode({
                   profiles,
                   relatedEvents,
                   translationTargetLanguage,
+                  sharePrefixes,
                 }),
               ],
             ]
           : [];
       },
     ),
-    ...addressReferences({ content: target.content, profiles }).map(
-      (reference) => [reference.token, reference] as const,
-    ),
+    ...addressReferences({
+      content: target.content,
+      profiles,
+      sharePrefixes,
+    }).map((reference) => [reference.token, reference] as const),
   ]);
 
   const replyContext = threadEventReferences(target).map((reference) => {
@@ -1662,6 +1727,7 @@ function mergedActivityNode({
             event,
             profiles,
             translationTargetLanguage,
+            sharePrefixes,
           }),
           resolutionStatus: 'resolved' as const,
         }
@@ -1697,8 +1763,12 @@ function mergedActivityNode({
     props: {
       id: `nr-activity-${target.id}`,
       entityKey: entityKey(target.id),
-      className: `nr-list-event${rankingScore === null ? '' : ' nr-for-you-event'}`,
-      defaultExpanded: true,
+      className: `nr-list-event${mode === 'for-you' ? ' nr-for-you-event' : ''}`,
+      defaultExpanded: false,
+      filterTimestamps:
+        rankingEvent !== null
+          ? [rankingEvent.event_created_at]
+          : activities.map((activity) => activity.event_created_at),
     },
     summary: el('row', { gap: 'xs', align: 'between', itemAlign: 'start' }, [
       keyed(
@@ -1712,8 +1782,8 @@ function mergedActivityNode({
         }),
       ),
       el('stack', { fill: true }, [
-        ...(rankingEvent && rankingScore !== null
-          ? [forYouMetadata(rankingEvent, rankingScore)]
+        ...(rankingEvent
+          ? [eventSignalMetadata(rankingEvent, rankingScore)]
           : []),
         ...summaryNodes(summary),
         profilePostNode({
@@ -1758,7 +1828,7 @@ function groupEventNodes({
   authorPreferences: Map<string, NrAuthorPreferenceValue>;
   sharePrefixes: NostrSharePrefixes;
   translationTargetLanguage: string;
-  rankingScores: Record<string, number> | null;
+  rankingScores: Record<string, number>;
   mode: NrListMode;
   renderScope: string;
 }): WebNode[] {
@@ -1807,12 +1877,13 @@ function groupEventNodes({
       }
 
       renderedTargets.add(target.id);
+      const targetEvent = eventsById.get(target.id) ?? null;
 
       nodes.push(
         mergedActivityNode({
           alias,
           target: aggregate.target,
-          targetEvent: eventsById.get(target.id) ?? null,
+          targetEvent,
           activities: aggregate.activities,
           profiles,
           localPreference: localPreferences.get(target.id) ?? null,
@@ -1820,8 +1891,8 @@ function groupEventNodes({
             authorPreferences.get(target.pubkey.toLowerCase()) ?? null,
           sharePrefixes,
           translationTargetLanguage,
-          rankingEvent: rankingScores ? event : null,
-          rankingScore: rankingScores?.[event.id] ?? null,
+          rankingEvent: targetEvent ?? event,
+          rankingScore: rankingScores[targetEvent?.id ?? event.id] ?? null,
           mode,
           renderScope,
         }),
@@ -1851,7 +1922,7 @@ function groupEventNodes({
             authorPreferences.get(event.pubkey.toLowerCase()) ?? null,
           sharePrefixes,
           translationTargetLanguage,
-          rankingEvent: rankingScores ? event : null,
+          rankingEvent: event,
           rankingScore: rankingScores?.[event.id] ?? null,
           mode,
           renderScope,
@@ -1889,7 +1960,9 @@ function groupNode({
   authorPreferences,
   sharePrefixes,
   translationTargetLanguage,
+  rankingScores,
   mode,
+  selectedTimeRanges,
 }: GroupNodeProps): WebNode {
   return {
     type: 'element',
@@ -1902,17 +1975,13 @@ function groupNode({
       filterText: group.tag,
       filterName: group.tag,
       filterPath: `${group.type}/${group.tag}`,
-      optimisticCountLabel: group.tag,
-      optimisticCountValue: group.unreadCount,
-      optimisticPruneWhenEmpty: true,
+      pruneWhenNoTreeItems: true,
     },
     summary: el(
       'row',
       { gap: 'xs', itemAlign: 'center', align: 'between', fill: true },
       [
-        el('text', { weight: 'semibold', optimisticCountText: true }, [
-          text(countLabel(group.tag, group.unreadCount)),
-        ]),
+        el('countLabel', { label: group.tag, weight: 'semibold' }, []),
         keyed(
           `nr:${mode}:group:${group.type}:${encodeURIComponent(group.tag)}:menu`,
           el(
@@ -1928,7 +1997,13 @@ function groupNode({
                 tag: 'menuItem',
                 props: {
                   label: 'Read all',
-                  action: readTagAction(alias, group.type, group.tag),
+                  action: readTagAction({
+                    alias,
+                    type: group.type,
+                    tag: group.tag,
+                    mode,
+                    selectedTimeRanges,
+                  }),
                 },
               },
               {
@@ -1960,7 +2035,7 @@ function groupNode({
       authorPreferences,
       sharePrefixes,
       translationTargetLanguage,
-      rankingScores: null,
+      rankingScores,
       mode,
       renderScope: `${group.type}:${encodeURIComponent(group.tag)}`,
     }),
@@ -1978,7 +2053,9 @@ type SectionNodeProps = {
   authorPreferences: Map<string, NrAuthorPreferenceValue>;
   sharePrefixes: NostrSharePrefixes;
   translationTargetLanguage: string;
+  rankingScores: Record<string, number>;
   mode: NrListMode;
+  selectedTimeRanges: NrListTimeRange[];
 };
 
 function sectionNode({
@@ -1992,33 +2069,26 @@ function sectionNode({
   authorPreferences,
   sharePrefixes,
   translationTargetLanguage,
+  rankingScores,
   mode,
+  selectedTimeRanges,
 }: SectionNodeProps): WebNode {
-  const sectionUnreadCount = groups.reduce(
-    (sum, group) => sum + group.unreadCount,
-    0,
-  );
-
   return {
     type: 'element',
     tag: 'treeItem',
     renderKey: `nr:${mode}:section:${type}`,
     props: {
       id: `nr-section-${title.toLowerCase()}`,
-      defaultExpanded: true,
+      defaultExpanded: false,
       filterName: title,
       filterText: title,
-      optimisticCountLabel: title,
-      optimisticCountValue: sectionUnreadCount,
     },
     summary: el(
       'row',
       { gap: 'xs', itemAlign: 'center', align: 'between', fill: true },
       [
         el('row', { gap: 'xs', itemAlign: 'center' }, [
-          el('text', { weight: 'bold', optimisticCountText: true }, [
-            text(countLabel(title, sectionUnreadCount)),
-          ]),
+          el('countLabel', { label: title, weight: 'bold' }, []),
         ]),
         keyed(
           `nr:${mode}:section:${type}:menu`,
@@ -2056,7 +2126,9 @@ function sectionNode({
               authorPreferences,
               sharePrefixes,
               translationTargetLanguage,
+              rankingScores,
               mode,
+              selectedTimeRanges,
             }),
           ),
   };
@@ -2153,33 +2225,19 @@ function fetchProgressStatus(): WebNode {
   );
 }
 
-function listModeAction(alias: string, mode: NrListMode) {
-  return {
-    type: 'command' as const,
-    command: alias,
-    subcommand: 'list',
-    arguments: {},
-    options: { mode },
-    recordInTimeline: false,
-  };
-}
+type ListFilterPanelProps = {
+  alias: string;
+  mode: 'timeline' | 'for-you' | 'profile';
+  selected: NrFeedCategory[];
+  selectedTimeRanges: NrListTimeRange[];
+};
 
-function listFilterAction(alias: string, mode: NrListMode) {
-  return {
-    type: 'command' as const,
-    command: alias,
-    subcommand: 'list',
-    arguments: {},
-    options: { mode },
-    recordInTimeline: false,
-  };
-}
-
-function listFilterPanel(
-  alias: string,
-  mode: 'timeline' | 'for-you' | 'profile',
-  selected: NrFeedCategory[],
-): WebNode {
+function listFilterPanel({
+  alias,
+  mode,
+  selected,
+  selectedTimeRanges,
+}: ListFilterPanelProps): WebNode {
   return keyed(
     `nr:${mode}:filter-form`,
     el(
@@ -2189,7 +2247,7 @@ function listFilterPanel(
         revealId: NR_LIST_FILTER_REVEAL_ID,
         hiddenUntilRevealed: true,
         formOptionFieldNames: ['kinds'],
-        action: listFilterAction(alias, mode),
+        action: nrListCommandAction({ alias, mode, selectedTimeRanges }),
       },
       [
         el('text', { weight: 'bold' }, [text('KINDS')]),
@@ -2231,7 +2289,17 @@ function listFilterPanel(
   );
 }
 
-function listModeSwitch(alias: string, mode: NrListMode): WebNode {
+type ListModeSwitchProps = {
+  alias: string;
+  mode: NrListMode;
+  selectedTimeRanges: NrListTimeRange[];
+};
+
+function listModeSwitch({
+  alias,
+  mode,
+  selectedTimeRanges,
+}: ListModeSwitchProps): WebNode {
   return el(
     'row',
     { className: 'widget-tabs', gap: 'xs', itemAlign: 'center' },
@@ -2241,7 +2309,11 @@ function listModeSwitch(alias: string, mode: NrListMode): WebNode {
         {
           label: 'Timeline',
           className: `web-button widget-tab${mode === 'timeline' ? ' active' : ''}`,
-          action: listModeAction(alias, 'timeline'),
+          action: nrListCommandAction({
+            alias,
+            mode: 'timeline',
+            selectedTimeRanges,
+          }),
         },
         [],
       ),
@@ -2250,7 +2322,11 @@ function listModeSwitch(alias: string, mode: NrListMode): WebNode {
         {
           label: 'For You',
           className: `web-button widget-tab${mode === 'for-you' ? ' active' : ''}`,
-          action: listModeAction(alias, 'for-you'),
+          action: nrListCommandAction({
+            alias,
+            mode: 'for-you',
+            selectedTimeRanges,
+          }),
         },
         [],
       ),
@@ -2259,7 +2335,11 @@ function listModeSwitch(alias: string, mode: NrListMode): WebNode {
         {
           label: 'Profile',
           className: `web-button widget-tab${mode === 'profile' ? ' active' : ''}`,
-          action: listModeAction(alias, 'profile'),
+          action: nrListCommandAction({
+            alias,
+            mode: 'profile',
+            selectedTimeRanges,
+          }),
         },
         [],
       ),
@@ -2268,7 +2348,11 @@ function listModeSwitch(alias: string, mode: NrListMode): WebNode {
         {
           label: 'Archive',
           className: `web-button widget-tab${mode === 'archive' ? ' active' : ''}`,
-          action: listModeAction(alias, 'archive'),
+          action: nrListCommandAction({
+            alias,
+            mode: 'archive',
+            selectedTimeRanges,
+          }),
         },
         [],
       ),
@@ -2340,7 +2424,14 @@ function profilePostNode({
             targetLanguage: translationTargetLanguage,
           }),
         ],
-        nostrInlineProfiles: inlineProfiles(event.content, profiles),
+        nostrInlineProfiles: inlineProfiles({
+          content: event.content,
+          profiles,
+          sharePrefixes: sharePrefixes ?? {
+            nevent: 'nostr://',
+            nprofile: 'nostr://',
+          },
+        }),
         nostrReplyContext: replyContext,
         nostrShowReplyContext: replyContext.length > 0,
         nostrEmbeds: embeds,
@@ -2362,6 +2453,11 @@ function profilePostNode({
           pubkey: event.pubkey,
           mode,
           preference: authorPreference,
+        }),
+        nostrProfileActionsReadAction: authorPreferenceActionsReadAction({
+          alias,
+          pubkey: event.pubkey,
+          mode,
         }),
         ...(activityHeaders.length > 0
           ? { nostrActivityHeaders: activityHeaders }
@@ -2417,11 +2513,13 @@ function profileReference({
   event,
   profiles,
   translationTargetLanguage,
+  sharePrefixes,
 }: {
   alias: string;
   event: NostrEvent;
   profiles: Map<string, CachedProfile>;
   translationTargetLanguage: string;
+  sharePrefixes: NostrSharePrefixes;
 }) {
   const profile = profileForPubkey({ profiles, pubkey: event.pubkey });
 
@@ -2437,6 +2535,7 @@ function profileReference({
     authorPicture: profile?.picture ?? undefined,
     authorAbout: profile?.about ?? undefined,
     relayHints: [],
+    sharePrefixes,
     createdAt: event.created_at,
     content: event.content,
     likeAction: likeNostrEventAction(alias, event),
@@ -2450,7 +2549,11 @@ function profileReference({
         targetLanguage: translationTargetLanguage,
       }),
     ],
-    inlineProfiles: inlineProfiles(event.content, profiles),
+    inlineProfiles: inlineProfiles({
+      content: event.content,
+      profiles,
+      sharePrefixes,
+    }),
   };
 }
 
@@ -2460,6 +2563,7 @@ type ProfileReferenceWithEmbedsProps = {
   profiles: Map<string, CachedProfile>;
   relatedEvents: Map<string, NostrEvent>;
   translationTargetLanguage: string;
+  sharePrefixes: NostrSharePrefixes;
 };
 
 function profileReferenceWithEmbeds({
@@ -2468,6 +2572,7 @@ function profileReferenceWithEmbeds({
   profiles,
   relatedEvents,
   translationTargetLanguage,
+  sharePrefixes,
 }: ProfileReferenceWithEmbedsProps) {
   return {
     ...profileReference({
@@ -2475,6 +2580,7 @@ function profileReferenceWithEmbeds({
       event,
       profiles,
       translationTargetLanguage,
+      sharePrefixes,
     }),
     embeddedReferences: [
       ...extractEventReferences(event.content).flatMap((reference) => {
@@ -2488,13 +2594,14 @@ function profileReferenceWithEmbeds({
                   event: embeddedEvent,
                   profiles,
                   translationTargetLanguage,
+                  sharePrefixes,
                 }),
                 token: reference.token,
               },
             ]
           : [];
       }),
-      ...addressReferences({ content: event.content, profiles }),
+      ...addressReferences({ content: event.content, profiles, sharePrefixes }),
     ],
   };
 }
@@ -2573,6 +2680,7 @@ function profileEventNode({
                   profiles,
                   relatedEvents: referencedEventsById,
                   translationTargetLanguage,
+                  sharePrefixes,
                 }),
                 resolutionStatus: 'resolved' as const,
               }
@@ -2602,22 +2710,25 @@ function profileEventNode({
                   profiles,
                   relatedEvents: referencedEventsById,
                   translationTargetLanguage,
+                  sharePrefixes,
                 }),
               ],
             ]
           : [];
       },
     ),
-    ...addressReferences({ content: displayEvent.content, profiles }).map(
-      (reference) => [reference.token, reference] as const,
-    ),
+    ...addressReferences({
+      content: displayEvent.content,
+      profiles,
+      sharePrefixes,
+    }).map((reference) => [reference.token, reference] as const),
   ]);
 
   return {
     type: 'element',
     tag: 'treeItem',
     renderKey: `nr:${renderScope}:source:${event.id}`,
-    props: { id: `nr-profile-${event.id}`, defaultExpanded: true },
+    props: { id: `nr-profile-${event.id}`, defaultExpanded: false },
     summary: el('stack', { gap: 'xs', fill: true }, [
       ...(event.kind === 7
         ? referencedEvents.map((reference) =>
@@ -2719,6 +2830,28 @@ export function renderNrListWeb({
   const translationTargetLanguage =
     listData.settings.translationTargetLanguage ?? 'en';
 
+  const fetchCoverage =
+    listData.mode === 'timeline' ? fetchCoverageBar(alias, listData) : null;
+
+  const listOptions = nrListCommandOptions({
+    mode: listData.mode,
+    selectedTimeRanges: listData.selectedTimeRanges,
+  });
+
+  const selectedTreeTimeRanges: WebTreeTimeRange[] =
+    listData.selectedTimeRanges.map((range) => ({
+      ...range,
+      key: nrListTimeRangeKey(range),
+      removeAction: nrListCommandAction({
+        alias,
+        mode: listData.mode,
+        selectedTimeRanges: listData.selectedTimeRanges.filter(
+          (selected) =>
+            selected.since !== range.since || selected.until !== range.until,
+        ),
+      }),
+    }));
+
   const authorPreferences = new Map<string, NrAuthorPreferenceValue>(
     listData.authorPreferences.map((preference) => [
       preference.pubkey.toLowerCase(),
@@ -2744,14 +2877,29 @@ export function renderNrListWeb({
     meta: {
       command: alias,
       subcommand: 'list',
+      options: listOptions,
     },
     stylesheets: [fetchCoverageStylesheet, nrListStylesheet],
+    selectedTreeTimeRanges: {
+      [NR_TIMELINE_TIME_FILTER_GROUP]: selectedTreeTimeRanges,
+    },
     tree: keyed(
       `nr:${listData.mode}:root`,
       el('stack', { gap: 'sm' }, [
-        listModeSwitch(alias, listData.mode),
+        listModeSwitch({
+          alias,
+          mode: listData.mode,
+          selectedTimeRanges: listData.selectedTimeRanges,
+        }),
         ...(listData.mode !== 'archive'
-          ? [listFilterPanel(alias, listData.mode, listData.selectedCategories)]
+          ? [
+              listFilterPanel({
+                alias,
+                mode: listData.mode,
+                selected: listData.selectedCategories,
+                selectedTimeRanges: listData.selectedTimeRanges,
+              }),
+            ]
           : []),
         {
           type: 'element',
@@ -2792,9 +2940,9 @@ export function renderNrListWeb({
             ],
           },
           children: [
-            ...(listData.mode === 'timeline'
+            ...(fetchCoverage
               ? [
-                  fetchCoverageBar(alias, listData),
+                  fetchCoverage.node,
                   fetchProgressStatus(),
                   el('spacer', { size: 'md' }, []),
                 ]
@@ -2820,8 +2968,8 @@ export function renderNrListWeb({
                   ]
               : []),
             ...(listData.mode === 'for-you'
-              ? listData.forYouEvents.length > 0
-                ? groupEventNodes({
+              ? [
+                  ...groupEventNodes({
                     alias,
                     events: listData.forYouEvents,
                     profiles,
@@ -2833,12 +2981,32 @@ export function renderNrListWeb({
                     rankingScores: listData.forYouScores,
                     mode: 'for-you',
                     renderScope: 'for-you',
-                  })
-                : [
-                    el('text', { tone: 'muted' }, [
-                      text('No unread Timeline events found.'),
-                    ]),
-                  ]
+                  }),
+                  el(
+                    'treeEmpty',
+                    { className: 'nr-for-you-empty' },
+                    listData.forYouHasMore
+                      ? [
+                          el(
+                            'button',
+                            {
+                              label: 'Load next 25',
+                              action: nrListCommandAction({
+                                alias,
+                                mode: 'for-you',
+                                selectedTimeRanges: listData.selectedTimeRanges,
+                              }),
+                            },
+                            [],
+                          ),
+                        ]
+                      : [
+                          el('text', { tone: 'muted' }, [
+                            text('No unread For You posts found.'),
+                          ]),
+                        ],
+                  ),
+                ]
               : []),
             ...(listData.mode === 'profile' || listData.mode === 'for-you'
               ? []
@@ -2854,7 +3022,9 @@ export function renderNrListWeb({
                     authorPreferences,
                     sharePrefixes,
                     translationTargetLanguage,
+                    rankingScores: listData.forYouScores,
                     mode: listData.mode,
+                    selectedTimeRanges: listData.selectedTimeRanges,
                   }),
                   sectionNode({
                     alias,
@@ -2867,7 +3037,9 @@ export function renderNrListWeb({
                     authorPreferences,
                     sharePrefixes,
                     translationTargetLanguage,
+                    rankingScores: listData.forYouScores,
                     mode: listData.mode,
+                    selectedTimeRanges: listData.selectedTimeRanges,
                   }),
                 ]),
           ],

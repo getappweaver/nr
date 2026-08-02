@@ -5,7 +5,14 @@ import type {
   NrFetchStatus,
   NrFetchWindow,
   NrListData,
+  NrListTimeRange,
 } from '../../shared/types';
+
+import {
+  nrListCommandAction,
+  nrListCommandOptions,
+  nrListTimeRangeKey,
+} from '../list-options';
 
 type FetchBucket = {
   since: number;
@@ -20,6 +27,11 @@ type BucketStatus = Pick<FetchBucket, 'status' | 'eventCount'>;
 
 const FETCH_COVERAGE_HOURS = 24;
 const HOUR_SECONDS = 60 * 60;
+export const NR_TIMELINE_TIME_FILTER_GROUP = 'nr.timeline-slots';
+
+export type FetchCoverageBarResult = {
+  node: WebNode;
+};
 
 export const fetchCoverageStylesheet = {
   id: 'nr-fetch-coverage',
@@ -44,6 +56,17 @@ export const fetchCoverageStylesheet = {
   grid-template-columns: repeat(24, minmax(1.3rem, 1fr));
   gap: 2px;
   min-width: 0;
+}
+
+.nr-fetch-button-row > .web-overflow-menu {
+  min-width: 0;
+  align-self: stretch;
+}
+
+.nr-fetch-button-row .web-overflow-trigger.nr-fetch-bucket {
+  width: 100%;
+  margin-right: 0;
+  opacity: 1;
 }
 
 .nr-fetch-label {
@@ -101,6 +124,18 @@ export const fetchCoverageStylesheet = {
 .nr-fetch-bucket.is-background-command-active:disabled {
   outline: 2px solid #f97316;
   outline-offset: -2px;
+}
+
+.nr-fetch-bucket.is-tree-time-filter-active,
+.nr-fetch-bucket.is-tree-time-filter-active:disabled {
+  outline: 2px solid var(--color-text);
+  outline-offset: -2px;
+}
+
+.nr-fetch-bucket.is-tree-time-filter-active::after {
+  content: '✓';
+  font-size: 0.78rem;
+  font-weight: 700;
 }
 `,
 };
@@ -226,8 +261,10 @@ function bucketStatus(
   return { status: 'fetched', eventCount };
 }
 
-function fetchBuckets(fetchWindows: NrFetchWindow[]): FetchBucket[] {
-  const nowSeconds = Math.floor(Date.now() / 1000);
+function fetchBuckets(
+  fetchWindows: NrFetchWindow[],
+  nowSeconds: number,
+): FetchBucket[] {
   const currentHourStart = hourStart(nowSeconds);
 
   return Array.from({ length: FETCH_COVERAGE_HOURS }, (_, index) => {
@@ -258,21 +295,55 @@ function fetchBuckets(fetchWindows: NrFetchWindow[]): FetchBucket[] {
   });
 }
 
-function fetchBoundaryLabels(): string[] {
-  const currentHourStart = hourStart(Math.floor(Date.now() / 1000));
-
-  return Array.from({ length: FETCH_COVERAGE_HOURS + 1 }, (_, index) =>
-    index === 0
-      ? 'now'
-      : hourLabel(currentHourStart - (index - 1) * HOUR_SECONDS),
-  );
+function fetchBoundaryLabels(buckets: FetchBucket[]): string[] {
+  return ['now', ...buckets.map((bucket) => hourLabel(bucket.since))];
 }
 
 function fetchBucketId(bucket: FetchBucket): string {
   return `nr-fetch-bucket-${bucket.since}-${bucket.until}`;
 }
 
-function fetchBucketAction(alias: string, bucket: FetchBucket) {
+function bucketRange(bucket: FetchBucket): NrListTimeRange {
+  return { since: bucket.since, until: bucket.until };
+}
+
+type ListTimeFilterActionProps = {
+  alias: string;
+  mode: NrListData['mode'];
+  selectedTimeRanges: NrListTimeRange[];
+};
+
+function listTimeFilterAction({
+  alias,
+  mode,
+  selectedTimeRanges,
+}: ListTimeFilterActionProps) {
+  return nrListCommandAction({ alias, mode, selectedTimeRanges });
+}
+
+function rangeIsSelected(
+  selectedTimeRanges: NrListTimeRange[],
+  range: NrListTimeRange,
+): boolean {
+  return selectedTimeRanges.some(
+    (selected) =>
+      selected.since === range.since && selected.until === range.until,
+  );
+}
+
+type FetchBucketActionProps = {
+  alias: string;
+  bucket: FetchBucket;
+  mode: NrListData['mode'];
+  selectedTimeRanges: NrListTimeRange[];
+};
+
+function fetchBucketAction({
+  alias,
+  bucket,
+  mode,
+  selectedTimeRanges,
+}: FetchBucketActionProps) {
   return {
     type: 'command' as const,
     command: alias,
@@ -288,7 +359,7 @@ function fetchBucketAction(alias: string, bucket: FetchBucket) {
       command: alias,
       subcommand: 'list',
       arguments: {},
-      options: { mode: 'timeline' },
+      options: nrListCommandOptions({ mode, selectedTimeRanges }),
       expandTreeItemIds: ['nr-fetch-progress'],
       recordInTimeline: false,
     },
@@ -303,6 +374,117 @@ function fetchBucketAction(alias: string, bucket: FetchBucket) {
   };
 }
 
+type FetchBucketNodeProps = FetchBucketActionProps;
+
+function fetchBucketNode({
+  alias,
+  bucket,
+  mode,
+  selectedTimeRanges,
+}: FetchBucketNodeProps): WebNode {
+  const description = fetchBucketTitle(bucket);
+  const range = bucketRange(bucket);
+  const selected = rangeIsSelected(selectedTimeRanges, range);
+
+  const toggledRanges = selected
+    ? selectedTimeRanges.filter(
+        (entry) => entry.since !== range.since || entry.until !== range.until,
+      )
+    : [...selectedTimeRanges, range];
+
+  const commonProps = {
+    id: fetchBucketId(bucket),
+    label: '',
+    ariaLabel: description,
+    title: description,
+    className: `nr-fetch-bucket nr-fetch-bucket--${bucket.status}`,
+    timeFilterGroup: NR_TIMELINE_TIME_FILTER_GROUP,
+    timeFilterRangeKey: nrListTimeRangeKey(range),
+  };
+
+  if (bucket.status === 'fetched' || bucket.status === 'partial') {
+    return el(
+      'overflowMenu',
+      {
+        ...commonProps,
+        buttonVariant: 'icon',
+        stopPropagation: true,
+      },
+      [
+        ...(bucket.status === 'partial'
+          ? [
+              el(
+                'menuItem',
+                {
+                  label: 'Fetch again',
+                  action: fetchBucketAction({
+                    alias,
+                    bucket,
+                    mode,
+                    selectedTimeRanges,
+                  }),
+                },
+                [],
+              ),
+            ]
+          : []),
+        el(
+          'menuItem',
+          {
+            label: selected
+              ? 'Remove this hour from filter'
+              : 'Add this hour to filter',
+            action: listTimeFilterAction({
+              alias,
+              mode,
+              selectedTimeRanges: toggledRanges,
+            }),
+          },
+          [],
+        ),
+        el(
+          'menuItem',
+          {
+            label: 'Filter to this hour only',
+            action: listTimeFilterAction({
+              alias,
+              mode,
+              selectedTimeRanges: [range],
+            }),
+          },
+          [],
+        ),
+        el(
+          'menuItem',
+          {
+            label: 'Clear time filter',
+            action: listTimeFilterAction({
+              alias,
+              mode,
+              selectedTimeRanges: [],
+            }),
+          },
+          [],
+        ),
+      ],
+    );
+  }
+
+  return el(
+    'button',
+    {
+      ...commonProps,
+      action: fetchBucketAction({
+        alias,
+        bucket,
+        mode,
+        selectedTimeRanges,
+      }),
+    },
+    [],
+  );
+}
+
 function fetchBucketTitle(bucket: FetchBucket): string {
   const since = new Date(bucket.since * 1000).toLocaleString();
   const until = new Date(bucket.until * 1000).toLocaleString();
@@ -315,12 +497,31 @@ function fetchBucketTitle(bucket: FetchBucket): string {
     return `Fetch follows for this interval: ${fetchRange}`;
   }
 
+  if (bucket.status === 'fetched') {
+    return `fetched: ${bucket.eventCount} event(s). Coverage interval: ${range}. Open time filter actions.`;
+  }
+
+  if (bucket.status === 'partial') {
+    return `partial: ${bucket.eventCount} event(s). Coverage interval: ${range}. Open actions to fetch again or change the time filter.`;
+  }
+
   return `${bucket.status}: ${bucket.eventCount} event(s). Coverage interval: ${range}. Click to fetch missing/latest slice: ${fetchRange}`;
 }
 
-export function fetchCoverageBar(alias: string, listData: NrListData): WebNode {
-  const buckets = fetchBuckets(listData.fetchWindows);
-  const labels = fetchBoundaryLabels();
+export function fetchCoverageBar(
+  alias: string,
+  listData: NrListData,
+): FetchCoverageBarResult {
+  const buckets = fetchBuckets(
+    listData.fetchWindows,
+    listData.fetchCoverageNowSeconds,
+  );
+
+  const labels = fetchBoundaryLabels(buckets);
+
+  const rangeKeys = buckets.map((bucket) =>
+    nrListTimeRangeKey(bucketRange(bucket)),
+  );
 
   const node = el('stack', { id: 'nr-fetch-coverage', gap: 'xs' }, [
     el('row', { gap: 'xs', itemAlign: 'baseline', align: 'between' }, [
@@ -333,6 +534,21 @@ export function fetchCoverageBar(alias: string, listData: NrListData): WebNode {
         ),
       ]),
     ]),
+    el(
+      'treeTimeFilterStatus',
+      {
+        className: 'web-tree-time-filter-status',
+        timeFilterGroup: NR_TIMELINE_TIME_FILTER_GROUP,
+        timeFilterVisibleRangeKeys: rangeKeys,
+        timeFilterUnitLabel: 'hours',
+        action: listTimeFilterAction({
+          alias,
+          mode: listData.mode,
+          selectedTimeRanges: [],
+        }),
+      },
+      [],
+    ),
     el('box', { className: 'nr-fetch-coverage-bar' }, [
       el(
         'row',
@@ -345,16 +561,12 @@ export function fetchCoverageBar(alias: string, listData: NrListData): WebNode {
         'row',
         { className: 'nr-fetch-button-row' },
         buckets.map((bucket) =>
-          el(
-            'button',
-            {
-              id: fetchBucketId(bucket),
-              label: fetchBucketTitle(bucket),
-              className: `nr-fetch-bucket nr-fetch-bucket--${bucket.status}`,
-              action: fetchBucketAction(alias, bucket),
-            },
-            [],
-          ),
+          fetchBucketNode({
+            alias,
+            bucket,
+            mode: listData.mode,
+            selectedTimeRanges: listData.selectedTimeRanges,
+          }),
         ),
       ),
     ]),
@@ -371,16 +583,20 @@ export function fetchCoverageBar(alias: string, listData: NrListData): WebNode {
                 'green: fetched successfully',
                 'yellow: partial fetch; some relay groups failed',
                 'red: all relay groups failed',
+                '✓: included in the current time filter',
               ].join('\n'),
             ),
           ]),
         ],
       ) as Extract<WebNode, { type: 'element' }>),
-      renderKey: 'nr:timeline:fetch-coverage:legend',
+      renderKey: `nr:${listData.mode}:fetch-coverage:legend`,
     },
   ]);
 
-  return node.type === 'element'
-    ? { ...node, renderKey: 'nr:timeline:fetch-coverage' }
-    : node;
+  return {
+    node:
+      node.type === 'element'
+        ? { ...node, renderKey: `nr:${listData.mode}:fetch-coverage` }
+        : node,
+  };
 }

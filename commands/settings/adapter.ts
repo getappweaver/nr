@@ -42,6 +42,22 @@ function parseBooleanOption(value: unknown): boolean {
   return value === true || value === 'true' || value === '1';
 }
 
+function parseEnabledSetting(value: unknown): boolean | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+
+  if (value === true || value === 'true' || value === 'enabled') {
+    return true;
+  }
+
+  if (value === false || value === 'false' || value === 'disabled') {
+    return false;
+  }
+
+  throw new Error('Initial latest-hour filter must be enabled or disabled.');
+}
+
 function parseBackend(value: unknown): AgentBackendName | null | undefined {
   if (value === undefined || value === null) {
     return undefined;
@@ -81,6 +97,9 @@ function formatSettings(settings: ReturnType<typeof getNrSettings>): string {
     `Event share URL: ${settings.eventSharePrefix}`,
     `Profile share URL: ${settings.profileSharePrefix}`,
     `Translation target language: ${settings.translationTargetLanguage ?? 'en'}`,
+    `Filter to latest fetched hour on open: ${
+      settings.filterToLatestFetchedSlotOnOpen ? 'enabled' : 'disabled'
+    }`,
     `Relay fetch concurrency: ${settings.relayFetchConcurrency}`,
     `AI evaluation concurrency: ${settings.aiEvaluationConcurrency}`,
     '',
@@ -200,6 +219,7 @@ function renderSettingsWeb({
             'profile_share_prefix',
             'translation_target_language',
             'hourly_scheduler',
+            'filter_to_latest_fetched_slot_on_open',
             'relay_fetch_concurrency',
             'ai_evaluation_concurrency',
           ],
@@ -383,6 +403,24 @@ function renderSettingsWeb({
               ]
             : []),
           el('text', { weight: 'semibold', size: 'sm' }, [
+            text('Initial time filter'),
+          ]),
+          el(
+            'select',
+            {
+              formFieldName: 'filter_to_latest_fetched_slot_on_open',
+              value: settings.filterToLatestFetchedSlotOnOpen
+                ? 'enabled'
+                : 'disabled',
+              choices: ['enabled', 'disabled'],
+              choiceLabels: {
+                enabled: 'Latest fetched hour',
+                disabled: 'No initial time filter',
+              },
+            },
+            [],
+          ),
+          el('text', { weight: 'semibold', size: 'sm' }, [
             text('Concurrent relay groups'),
           ]),
           el(
@@ -479,6 +517,10 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
     params.parsed.options.hourly_scheduler,
   );
 
+  const filterToLatestFetchedSlotOnOpen = parseEnabledSetting(
+    params.parsed.options.filter_to_latest_fetched_slot_on_open,
+  );
+
   const hasUpdates =
     backend !== undefined ||
     model !== undefined ||
@@ -486,6 +528,7 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
     eventSharePrefix !== undefined ||
     profileSharePrefix !== undefined ||
     translationTargetLanguage !== undefined ||
+    filterToLatestFetchedSlotOnOpen !== undefined ||
     hourlySchedulerRequested ||
     relayFetchConcurrency !== undefined ||
     aiEvaluationConcurrency !== undefined;
@@ -525,6 +568,9 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
       translationTargetLanguage === undefined
         ? current.translationTargetLanguage
         : translationTargetLanguage,
+    filterToLatestFetchedSlotOnOpen:
+      filterToLatestFetchedSlotOnOpen ??
+      current.filterToLatestFetchedSlotOnOpen,
     relayFetchConcurrency:
       relayFetchConcurrency ?? current.relayFetchConcurrency,
     aiEvaluationConcurrency:

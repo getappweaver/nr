@@ -40,6 +40,23 @@ export const listDefinition = (
       kind: 'boolean',
       required: false,
     },
+    {
+      name: 'time_range',
+      flag: '--time-range',
+      summary:
+        'Selected half-open event time range encoded as since:until. Repeat to select multiple ranges.',
+      kind: 'string',
+      multiple: true,
+      required: false,
+    },
+    {
+      name: 'time_filter_initialized',
+      flag: '--time-filter-initialized',
+      summary:
+        'Marks the time filter as initialized; with no ranges, keeps the list explicitly unfiltered.',
+      kind: 'boolean',
+      required: false,
+    },
   ],
   examples: [`${prefix}${alias} list`, `${prefix}${alias} list --mode archive`],
   monitoring: { name: 'nr.list', attributes: {} },

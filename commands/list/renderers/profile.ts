@@ -36,6 +36,7 @@ function authorPreferenceCommandAction({
       arguments: {},
       options: { mode },
       recordInTimeline: false,
+      target: 'taskbar' as const,
     },
   };
 }
@@ -48,7 +49,10 @@ export function authorPreferenceActions({
 }: AuthorPreferenceActionProps): WebNostrPostExtraAction[] {
   return [
     {
-      label: preference === 'like' ? '(👍 author)' : '👍 author',
+      optimisticKey: 'author-like',
+      label: preference === 'like' ? 'clear 👍' : '👍 author',
+      inactiveLabel: '👍 author',
+      activeLabel: 'clear 👍',
       ariaLabel:
         preference === 'like'
           ? 'Remove positive author preference'
@@ -63,7 +67,10 @@ export function authorPreferenceActions({
       active: preference === 'like',
     },
     {
-      label: preference === 'dislike' ? '(👎 author)' : '👎 author',
+      optimisticKey: 'author-dislike',
+      label: preference === 'dislike' ? 'clear 👎' : '👎 author',
+      inactiveLabel: '👎 author',
+      activeLabel: 'clear 👎',
       ariaLabel:
         preference === 'dislike'
           ? 'Remove negative author preference'
@@ -78,4 +85,20 @@ export function authorPreferenceActions({
       active: preference === 'dislike',
     },
   ];
+}
+
+export function authorPreferenceActionsReadAction({
+  alias,
+  pubkey,
+  mode,
+}: Omit<AuthorPreferenceActionProps, 'preference'>) {
+  return {
+    type: 'command' as const,
+    command: alias,
+    subcommand: 'author-interest-actions',
+    arguments: {},
+    options: { pubkey, mode },
+    recordInTimeline: false,
+    pendingUi: { presentation: 'none' as const },
+  };
 }

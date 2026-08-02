@@ -46,6 +46,18 @@ export type NrTagGroup = {
 
 export type NrListMode = 'timeline' | 'for-you' | 'profile' | 'archive';
 
+export type NrListTimeRange = {
+  since: number;
+  until: number;
+};
+
+export type NrListTimeRangeSource = 'request' | 'latest-fetched-slot' | 'none';
+
+export type NrListTimeSelection = {
+  initialized: boolean;
+  ranges: NrListTimeRange[];
+};
+
 export type NrFetchScope = 'follows';
 
 export type NrFetchStatus = 'fetched' | 'partial' | 'failed';
@@ -140,14 +152,19 @@ export type NrTaxonomyTerm = {
 
 export type NrListData = {
   mode: NrListMode;
+  selectedTimeRanges: NrListTimeRange[];
+  selectedTimeRangeSource: NrListTimeRangeSource;
+  timeFilterInitialized: boolean;
   selectedCategories: import('../list/categories').NrFeedCategory[];
   profileEvents: NrProfileEvent[];
   forYouEvents: NrEvent[];
+  forYouHasMore: boolean;
   forYouScores: Record<string, number>;
   activityEvents: NrEvent[];
   topicGroups: NrTagGroup[];
   moodGroups: NrTagGroup[];
   unreadTotal: number;
+  fetchCoverageNowSeconds: number;
   fetchWindows: NrFetchWindow[];
   interactions: NrInteraction[];
   interestSignals: NrInterestSignal[];

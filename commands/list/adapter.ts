@@ -15,7 +15,13 @@ import { extractProfileReferences } from '../../references';
 import { getNrSchedulerResource } from '../../settings';
 import type { NrCommandAdapterParams } from '../../types/adapter-params';
 
-import type { NrEvent, NrListData, NrListMode } from '../shared/types';
+import type {
+  NrEvent,
+  NrListData,
+  NrListMode,
+  NrListTimeRange,
+  NrListTimeSelection,
+} from '../shared/types';
 
 import { normalizeNrFeedCategories } from './categories';
 import { handleListCommand } from './handler';
@@ -44,10 +50,60 @@ async function measureListStep<T>({
     : run();
 }
 
+function parseTimeRange(value: string): NrListTimeRange {
+  const parts = value.split(':');
+  const since = Number(parts[0]);
+  const until = Number(parts[1]);
+
+  if (
+    parts.length !== 2 ||
+    !Number.isSafeInteger(since) ||
+    !Number.isSafeInteger(until) ||
+    since < 0 ||
+    since >= until
+  ) {
+    throw new Error(
+      `Invalid --time-range "${value}"; expected non-negative integer since:until with since < until.`,
+    );
+  }
+
+  return { since, until };
+}
+
+function parseTimeSelection(
+  options: NrCommandAdapterParams['parsed']['options'],
+): NrListTimeSelection {
+  const rawRanges = options.time_range;
+
+  const values = Array.isArray(rawRanges)
+    ? rawRanges.map(String)
+    : rawRanges === undefined
+      ? []
+      : [String(rawRanges)];
+
+  const ranges = [
+    ...new Map(
+      values.map((value) => {
+        const range = parseTimeRange(value);
+
+        return [`${range.since}:${range.until}`, range];
+      }),
+    ).values(),
+  ];
+
+  return {
+    initialized:
+      options.time_filter_initialized === true ||
+      options.time_filter_initialized === 'true',
+    ranges,
+  };
+}
+
 function collectProfilePubkeys(listData: NrListData): string[] {
   const events: NrEvent[] = [
     ...listData.topicGroups.flatMap((group) => group.events),
     ...listData.moodGroups.flatMap((group) => group.events),
+    ...listData.forYouEvents,
     ...listData.activityEvents,
   ];
 
@@ -115,6 +171,8 @@ async function runListCommand(
     params.parsed.options.local_mutation === true ||
     params.parsed.options.local_mutation === 'true';
 
+  const timeSelection = parseTimeSelection(params.parsed.options);
+
   if (mode !== 'archive' && rawKinds !== undefined) {
     saveNrListFilter({
       db: params.db,
@@ -126,7 +184,7 @@ async function runListCommand(
   const listData = await measureListStep({
     params,
     name: 'nr.list.db',
-    run: () => handleListCommand({ db: params.db, mode }),
+    run: () => handleListCommand({ db: params.db, mode, timeSelection }),
   });
 
   const storedEvents = [

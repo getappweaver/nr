@@ -71,6 +71,15 @@ export const settingsDefinition = (
       required: false,
     },
     {
+      name: 'filter_to_latest_fetched_slot_on_open',
+      flag: '--filter-to-latest-fetched-slot-on-open',
+      summary:
+        'Select the latest fetched or partially fetched hour when Nostr Radar first opens.',
+      kind: 'string',
+      required: false,
+      choices: ['enabled', 'disabled'],
+    },
+    {
       name: 'relay_fetch_concurrency',
       flag: '--relay-fetch-concurrency',
       summary: 'Maximum relay-author groups fetched concurrently.',

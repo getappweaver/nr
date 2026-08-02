@@ -9,6 +9,7 @@ import type { MessageSource } from '@src/messaging';
 import { parseCliInput, parseStructuredInput } from '@src/system/parser-cli';
 import type { WebHandlerResult } from '@src/web/ui-schema';
 
+import { adaptAuthorInterestActionsCommand } from './commands/author-interest-actions/adapter';
 import { adaptAuthorInterestRecordCommand } from './commands/author-interest-record/adapter';
 import { adaptContextCommand } from './commands/context/adapter';
 import { adaptFetchLatestCommand } from './commands/fetch-latest/adapter';
@@ -22,8 +23,8 @@ import { adaptMarkCommand } from './commands/mark/adapter';
 import { adaptParseCommand } from './commands/parse/adapter';
 import { adaptReadCommand } from './commands/read/adapter';
 import { adaptReevaluateCommand } from './commands/reevaluate/adapter';
-import { adaptSettingsCommand } from './commands/settings/adapter';
 import { adaptScheduleCommand } from './commands/schedule/adapter';
+import { adaptSettingsCommand } from './commands/settings/adapter';
 import { adaptTaxonomyCommand } from './commands/taxonomy/adapter';
 import type {
   NrCommandAdapterParams,
@@ -45,6 +46,7 @@ type NrSubcommand =
   | 'latest'
   | 'interaction-record'
   | 'interest-record'
+  | 'author-interest-actions'
   | 'author-interest-record'
   | 'debug'
   | 'list-parse-single'
@@ -76,6 +78,7 @@ const subcommandAdapters: Record<NrSubcommand, NrCommandAdapter> = {
   latest: adaptFetchLatestCommand,
   'interaction-record': adaptInteractionRecordCommand,
   'interest-record': adaptInterestRecordCommand,
+  'author-interest-actions': adaptAuthorInterestActionsCommand,
   'author-interest-record': adaptAuthorInterestRecordCommand,
   debug: adaptListParseSingleCommand,
   'list-parse-single': adaptListParseSingleCommand,
@@ -117,6 +120,7 @@ function isNrSubcommand(value: string): value is NrSubcommand {
     value === 'latest' ||
     value === 'interaction-record' ||
     value === 'interest-record' ||
+    value === 'author-interest-actions' ||
     value === 'author-interest-record' ||
     value === 'debug' ||
     value === 'list-parse-single' ||

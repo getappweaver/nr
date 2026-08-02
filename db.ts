@@ -14,6 +14,10 @@ import {
   normalizeNrFeedCategories,
   type NrFeedCategory,
 } from './commands/list/categories';
+import {
+  calculateNrFetchCoverage,
+  newestFetchedNrCoverageBucket,
+} from './commands/list/fetch-coverage';
 import type {
   EventClassification,
   NostrEvent,
@@ -31,6 +35,9 @@ import type {
   NrInterestSignalType,
   NrListMode,
   NrListData,
+  NrListTimeRange,
+  NrListTimeRangeSource,
+  NrListTimeSelection,
   NrTagGroup,
   NrTaxonomyTerm,
   NrTaxonomyTermType,
@@ -424,6 +431,12 @@ export function createNrTable(db: DatabaseType): void {
       read_at          INTEGER,
       archived_at      INTEGER
     )
+  `);
+
+  db.run(`
+    CREATE INDEX IF NOT EXISTS idx_nr_events_unread_created_at
+    ON nr_events(event_created_at DESC)
+    WHERE read_at IS NULL
   `);
 
   ensureNrEventColumn(db, 'archived_at', 'INTEGER');
@@ -1371,6 +1384,26 @@ export function listNrAuthorPreferences(
   ).map(rowToNrAuthorPreference);
 }
 
+export function getNrAuthorPreference({
+  db,
+  pubkey,
+}: {
+  db: DatabaseType;
+  pubkey: string;
+}): NrAuthorPreference | null {
+  const normalizedPubkey = pubkey.trim().toLowerCase();
+
+  if (!normalizedPubkey) {
+    return null;
+  }
+
+  const row = db
+    .prepare('SELECT * FROM nr_author_preferences WHERE pubkey = ?')
+    .get(normalizedPubkey) as AuthorPreferenceRow | null;
+
+  return row ? rowToNrAuthorPreference(row) : null;
+}
+
 function backfillNrInterestSignals(db: DatabaseType): void {
   const interactionTypes: Record<NrInteractionType, NrInterestSignalType> = {
     liked: 'like',
@@ -2315,6 +2348,26 @@ function listModePredicate(mode: NrListMode): string {
   return mode === 'archive' ? 'e.archived_at IS NOT NULL' : 'e.read_at IS NULL';
 }
 
+type EventTimeRangePredicate = {
+  sql: string;
+  params: number[];
+};
+
+function eventTimeRangePredicate(
+  ranges: NrListTimeRange[],
+): EventTimeRangePredicate {
+  if (ranges.length === 0) {
+    return { sql: '', params: [] };
+  }
+
+  return {
+    sql: `AND (${ranges
+      .map(() => '(e.event_created_at >= ? AND e.event_created_at < ?)')
+      .join(' OR ')})`,
+    params: ranges.flatMap((range) => [range.since, range.until]),
+  };
+}
+
 export function getNrListFilter({
   db,
   mode,
@@ -2448,10 +2501,12 @@ type ListTagsProps = {
   db: DatabaseType;
   type: 'topic' | 'mood';
   mode: NrListMode;
+  timeRanges: NrListTimeRange[];
 };
 
-function listTags({ db, type, mode }: ListTagsProps): TagRow[] {
+function listTags({ db, type, mode, timeRanges }: ListTagsProps): TagRow[] {
   const predicate = listModePredicate(mode);
+  const timePredicate = eventTimeRangePredicate(timeRanges);
 
   return db
     .prepare(
@@ -2459,12 +2514,12 @@ function listTags({ db, type, mode }: ListTagsProps): TagRow[] {
       SELECT t.tag AS tag, COUNT(DISTINCT e.id) AS count
       FROM nr_event_tags t
       JOIN nr_events e ON e.id = t.event_id
-      WHERE t.type = ? AND ${predicate}
+      WHERE t.type = ? AND ${predicate} ${timePredicate.sql}
       GROUP BY t.tag
       ORDER BY count DESC, t.tag COLLATE NOCASE ASC
     `,
     )
-    .all(type) as TagRow[];
+    .all(type, ...timePredicate.params) as TagRow[];
 }
 
 type ListEventsForTagProps = {
@@ -2474,6 +2529,7 @@ type ListEventsForTagProps = {
   hiddenEventIds: Set<string>;
   mode: NrListMode;
   categories: NrFeedCategory[];
+  timeRanges: NrListTimeRange[];
 };
 
 function listEventsForTag({
@@ -2483,8 +2539,10 @@ function listEventsForTag({
   hiddenEventIds,
   mode,
   categories,
+  timeRanges,
 }: ListEventsForTagProps): NrEvent[] {
   const predicate = listModePredicate(mode);
+  const timePredicate = eventTimeRangePredicate(timeRanges);
 
   const unreadTargetPredicate =
     mode === 'archive'
@@ -2509,11 +2567,11 @@ function listEventsForTag({
       FROM nr_events e
       JOIN nr_event_tags t ON t.event_id = e.id
       LEFT JOIN nr_classifications c ON c.event_id = e.id
-      WHERE t.type = ? AND t.tag = ? AND ${predicate} ${unreadTargetPredicate}
+      WHERE t.type = ? AND t.tag = ? AND ${predicate} ${timePredicate.sql} ${unreadTargetPredicate}
       ORDER BY e.event_created_at DESC
     `,
     )
-    .all(type, tag) as EventRow[];
+    .all(type, tag, ...timePredicate.params) as EventRow[];
 
   return rows.map(rowToNrEvent).filter((event) => {
     if (
@@ -2545,6 +2603,7 @@ type BuildGroupsProps = {
   hiddenEventIds: Set<string>;
   mode: NrListMode;
   categories: NrFeedCategory[];
+  timeRanges: NrListTimeRange[];
 };
 
 function buildGroups({
@@ -2553,8 +2612,9 @@ function buildGroups({
   hiddenEventIds,
   mode,
   categories,
+  timeRanges,
 }: BuildGroupsProps): NrTagGroup[] {
-  return listTags({ db, type, mode })
+  return listTags({ db, type, mode, timeRanges })
     .map((row) => {
       const events = listEventsForTag({
         db,
@@ -2563,6 +2623,7 @@ function buildGroups({
         hiddenEventIds,
         mode,
         categories,
+        timeRanges,
       });
 
       return {
@@ -2575,21 +2636,77 @@ function buildGroups({
     .filter((group) => group.events.length > 0);
 }
 
-function relatedEventIdsForMode(
-  db: DatabaseType,
-  mode: NrListMode,
-): Set<string> {
+type ListForYouCandidatesProps = {
+  db: DatabaseType;
+  hiddenEventIds: Set<string>;
+  categories: NrFeedCategory[];
+};
+
+function listForYouCandidates({
+  db,
+  hiddenEventIds,
+  categories,
+}: ListForYouCandidatesProps): NrEvent[] {
+  const rows = db
+    .prepare(
+      `SELECT e.*, c.summary, c.model, c.classified_at, c.classification_json
+       FROM nr_events e
+       LEFT JOIN nr_classifications c ON c.event_id = e.id
+       WHERE e.read_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1
+           FROM nr_activity_targets activity_target
+           JOIN nr_events target ON target.id = activity_target.target_event_id
+           WHERE activity_target.activity_event_id = e.id
+             AND target.read_at IS NOT NULL
+         )
+       ORDER BY e.event_created_at DESC`,
+    )
+    .all() as EventRow[];
+
+  return rows.map(rowToNrEvent).filter((event) => {
+    if (
+      hiddenEventIds.has(event.id) ||
+      (event.kind === 1 && !eventHasCompleteContext(event))
+    ) {
+      return false;
+    }
+
+    try {
+      const category = categoryForNrEvent(
+        JSON.parse(event.raw_json) as NostrEvent,
+      );
+
+      return category !== null && categories.includes(category);
+    } catch {
+      return false;
+    }
+  });
+}
+
+type RelatedEventIdsForModeProps = {
+  db: DatabaseType;
+  mode: NrListMode;
+  timeRanges: NrListTimeRange[];
+};
+
+function relatedEventIdsForMode({
+  db,
+  mode,
+  timeRanges,
+}: RelatedEventIdsForModeProps): Set<string> {
   const predicate = listModePredicate(mode);
+  const timePredicate = eventTimeRangePredicate(timeRanges);
 
   const rows = db
     .prepare(
       `
       SELECT thread_context_json, referenced_events_json
       FROM nr_events e
-      WHERE ${predicate}
+       WHERE ${predicate} ${timePredicate.sql}
     `,
     )
-    .all() as Array<{
+    .all(...timePredicate.params) as Array<{
     thread_context_json: string | null;
     referenced_events_json: string | null;
   }>;
@@ -2605,7 +2722,53 @@ function relatedEventIdsForMode(
 type GetNrListDataProps = {
   db: DatabaseType;
   mode: NrListMode;
+  timeSelection: NrListTimeSelection;
 };
+
+type ResolvedTimeSelection = {
+  ranges: NrListTimeRange[];
+  source: NrListTimeRangeSource;
+};
+
+type ResolveListTimeSelectionProps = {
+  mode: NrListMode;
+  requested: NrListTimeSelection;
+  filterToLatestFetchedSlotOnOpen: boolean;
+  fetchWindows: NrFetchWindow[];
+  nowSeconds: number;
+};
+
+function resolveListTimeSelection({
+  mode,
+  requested,
+  filterToLatestFetchedSlotOnOpen,
+  fetchWindows,
+  nowSeconds,
+}: ResolveListTimeSelectionProps): ResolvedTimeSelection {
+  if (requested.initialized) {
+    return { ranges: requested.ranges, source: 'request' };
+  }
+
+  if (mode !== 'timeline' || !filterToLatestFetchedSlotOnOpen) {
+    return { ranges: [], source: 'none' };
+  }
+
+  const newestFetchedBucket = newestFetchedNrCoverageBucket(
+    calculateNrFetchCoverage({ fetchWindows, nowSeconds }),
+  );
+
+  return newestFetchedBucket
+    ? {
+        ranges: [
+          {
+            since: newestFetchedBucket.since,
+            until: newestFetchedBucket.until,
+          },
+        ],
+        source: 'latest-fetched-slot',
+      }
+    : { ranges: [], source: 'none' };
+}
 
 function scoringTopics(topics: string[]): string[] {
   return [
@@ -2685,8 +2848,31 @@ export function scoreNrEventForYou({
   return total / topics.length + authorScore;
 }
 
-export function getNrListData({ db, mode }: GetNrListDataProps): NrListData {
+export function getNrListData({
+  db,
+  mode,
+  timeSelection,
+}: GetNrListDataProps): NrListData {
   const nowSeconds = Math.floor(Date.now() / 1000);
+  const settings = getNrSettings(db);
+
+  const fetchWindows = listNrFetchWindows({
+    db,
+    since: nowSeconds - 24 * 60 * 60,
+    until: nowSeconds,
+    scopes: ['follows'],
+  });
+
+  const resolvedTimeSelection = resolveListTimeSelection({
+    mode,
+    requested: timeSelection,
+    filterToLatestFetchedSlotOnOpen: settings.filterToLatestFetchedSlotOnOpen,
+    fetchWindows,
+    nowSeconds,
+  });
+
+  const queryTimeRanges =
+    mode === 'timeline' ? resolvedTimeSelection.ranges : [];
 
   const selectedCategories =
     mode === 'archive'
@@ -2696,15 +2882,23 @@ export function getNrListData({ db, mode }: GetNrListDataProps): NrListData {
           mode,
         });
 
-  const hiddenEventIds = relatedEventIdsForMode(db, mode);
-
-  const topicGroups = buildGroups({
+  const hiddenEventIds = relatedEventIdsForMode({
     db,
-    type: 'topic',
-    hiddenEventIds,
     mode,
-    categories: selectedCategories,
+    timeRanges: queryTimeRanges,
   });
+
+  const topicGroups =
+    mode === 'for-you'
+      ? []
+      : buildGroups({
+          db,
+          type: 'topic',
+          hiddenEventIds,
+          mode,
+          categories: selectedCategories,
+          timeRanges: queryTimeRanges,
+        });
 
   if (mode === 'timeline') {
     topicGroups.sort(
@@ -2714,13 +2908,17 @@ export function getNrListData({ db, mode }: GetNrListDataProps): NrListData {
     );
   }
 
-  const moodGroups = buildGroups({
-    db,
-    type: 'mood',
-    hiddenEventIds,
-    mode,
-    categories: selectedCategories,
-  });
+  const moodGroups =
+    mode === 'for-you'
+      ? []
+      : buildGroups({
+          db,
+          type: 'mood',
+          hiddenEventIds,
+          mode,
+          categories: selectedCategories,
+          timeRanges: queryTimeRanges,
+        });
 
   const activityTargetPredicate =
     mode === 'archive'
@@ -2733,29 +2931,34 @@ export function getNrListData({ db, mode }: GetNrListDataProps): NrListData {
             AND target.read_at IS NOT NULL
         )`;
 
-  const activityEvents = (
-    db
-      .prepare(
-        `SELECT e.*, c.summary, c.model, c.classified_at, c.classification_json
+  const activityTimePredicate = eventTimeRangePredicate(queryTimeRanges);
+
+  const activityEvents =
+    mode === 'for-you'
+      ? []
+      : (
+          db
+            .prepare(
+              `SELECT e.*, c.summary, c.model, c.classified_at, c.classification_json
          FROM nr_events e
          LEFT JOIN nr_classifications c ON c.event_id = e.id
-         WHERE e.kind != 1 AND ${listModePredicate(mode)} ${activityTargetPredicate}
+         WHERE e.kind != 1 AND ${listModePredicate(mode)} ${activityTimePredicate.sql} ${activityTargetPredicate}
          ORDER BY e.event_created_at DESC`,
-      )
-      .all() as EventRow[]
-  )
-    .map(rowToNrEvent)
-    .filter((event) => {
-      try {
-        const category = categoryForNrEvent(
-          JSON.parse(event.raw_json) as NostrEvent,
-        );
+            )
+            .all(...activityTimePredicate.params) as EventRow[]
+        )
+          .map(rowToNrEvent)
+          .filter((event) => {
+            try {
+              const category = categoryForNrEvent(
+                JSON.parse(event.raw_json) as NostrEvent,
+              );
 
-        return category !== null && selectedCategories.includes(category);
-      } catch {
-        return false;
-      }
-    });
+              return category !== null && selectedCategories.includes(category);
+            } catch {
+              return false;
+            }
+          });
 
   const visibleUnreadEventIds = new Set(
     [
@@ -2770,63 +2973,78 @@ export function getNrListData({ db, mode }: GetNrListDataProps): NrListData {
   const topicAffinities = buildNrTopicAffinities(interestSignals);
   const authorAffinities = buildNrAuthorAffinities(authorPreferences);
 
-  const forYouEvents = [
-    ...new Map(
-      [...topicGroups, ...moodGroups]
-        .flatMap((group) => group.events)
-        .concat(activityEvents)
-        .map((event) => [event.id, event]),
-    ).values(),
-  ]
-    .filter(
-      (event) =>
-        scoreNrEventForYou({ event, topicAffinities, authorAffinities }) >= 0,
-    )
-    .sort((left, right) => {
-      const scoreDifference =
-        scoreNrEventForYou({
-          event: right,
-          topicAffinities,
-          authorAffinities,
-        }) -
-        scoreNrEventForYou({
-          event: left,
-          topicAffinities,
-          authorAffinities,
-        });
+  const rankedForYouEvents =
+    mode === 'for-you'
+      ? listForYouCandidates({
+          db,
+          hiddenEventIds,
+          categories: selectedCategories,
+        })
+          .map((event) => ({
+            event,
+            score: scoreNrEventForYou({
+              event,
+              topicAffinities,
+              authorAffinities,
+            }),
+          }))
+          .filter(({ score }) => score >= 0)
+          .sort(
+            (left, right) =>
+              right.score - left.score ||
+              right.event.event_created_at - left.event.event_created_at,
+          )
+      : [];
 
-      return scoreDifference || right.event_created_at - left.event_created_at;
-    });
+  const forYouHasMore = rankedForYouEvents.length > 25;
+  const selectedForYouEvents = rankedForYouEvents.slice(0, 25);
+  const forYouEvents = selectedForYouEvents.map(({ event }) => event);
+
+  const visibleScoredEvents =
+    mode === 'for-you'
+      ? selectedForYouEvents
+      : [
+          ...new Map(
+            [...topicGroups, ...moodGroups]
+              .flatMap((group) => group.events)
+              .filter((event) => event.kind === 1)
+              .map((event) => [event.id, event]),
+          ).values(),
+        ].map((event) => ({
+          event,
+          score: scoreNrEventForYou({
+            event,
+            topicAffinities,
+            authorAffinities,
+          }),
+        }));
 
   const forYouScores = Object.fromEntries(
-    forYouEvents.map((event) => [
-      event.id,
-      scoreNrEventForYou({ event, topicAffinities, authorAffinities }),
-    ]),
+    visibleScoredEvents.map(({ event, score }) => [event.id, score]),
   );
 
   return {
     mode,
+    selectedTimeRanges: resolvedTimeSelection.ranges,
+    selectedTimeRangeSource: resolvedTimeSelection.source,
+    timeFilterInitialized: true,
     selectedCategories,
     profileEvents: [],
     forYouEvents,
+    forYouHasMore,
     forYouScores,
     activityEvents,
     topicGroups,
     moodGroups,
     unreadTotal:
       mode === 'for-you' ? forYouEvents.length : visibleUnreadEventIds.size,
-    fetchWindows: listNrFetchWindows({
-      db,
-      since: nowSeconds - 24 * 60 * 60,
-      until: nowSeconds,
-      scopes: ['follows'],
-    }),
+    fetchCoverageNowSeconds: nowSeconds,
+    fetchWindows,
     interactions: listNrInteractions(db),
     interestSignals,
     authorPreferences,
     taxonomyTerms: listNrTaxonomyTerms(db),
-    settings: getNrSettings(db),
+    settings,
   };
 }
 

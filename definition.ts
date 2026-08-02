@@ -1,6 +1,7 @@
 import { createHelpSubcommandDefinition } from '@src/commands/help/command';
 import type { CommandDefinition } from '@src/system/command-definition';
 
+import { authorInterestActionsDefinition } from './commands/author-interest-actions/definition';
 import { authorInterestRecordDefinition } from './commands/author-interest-record/definition';
 import { contextDefinition } from './commands/context/definition';
 import { fetchLatestDefinition } from './commands/fetch-latest/definition';
@@ -11,8 +12,8 @@ import { listParseSingleDefinition } from './commands/list-parse-single/definiti
 import { markDefinition } from './commands/mark/definition';
 import { parseDefinition } from './commands/parse/definition';
 import { reevaluateDefinition } from './commands/reevaluate/definition';
-import { settingsDefinition } from './commands/settings/definition';
 import { scheduleDefinition } from './commands/schedule/definition';
+import { settingsDefinition } from './commands/settings/definition';
 import { taxonomyDefinition } from './commands/taxonomy/definition';
 
 export const commandDefinition = (
@@ -39,6 +40,7 @@ export const commandDefinition = (
     fetchLatestDefinition(prefix, alias),
     interactionRecordDefinition(),
     interestRecordDefinition(),
+    authorInterestActionsDefinition(),
     authorInterestRecordDefinition(),
     listParseSingleDefinition(prefix, alias),
     listDefinition(prefix, alias),
