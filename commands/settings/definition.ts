@@ -57,6 +57,14 @@ export const settingsDefinition = (
       required: false,
     },
     {
+      name: 'default_language',
+      flag: '--default-language',
+      summary:
+        'BCP 47 language omitted from timeline language groups (default: en).',
+      kind: 'string',
+      required: false,
+    },
+    {
       name: 'translation_target_language',
       flag: '--translation-target-language',
       summary: 'BCP 47 target language for post translation (default: en).',
@@ -92,6 +100,38 @@ export const settingsDefinition = (
       summary: 'Maximum AI evaluations run concurrently.',
       kind: 'integer',
       required: false,
+    },
+    {
+      name: 'archive_signal_review_mode',
+      flag: '--archive-signal-review-mode',
+      summary: 'Signal review behavior for archive actions.',
+      kind: 'string',
+      required: false,
+      choices: ['ask', 'always', 'never'],
+    },
+    {
+      name: 'like_signal_review_mode',
+      flag: '--like-signal-review-mode',
+      summary: 'Signal review behavior for public likes.',
+      kind: 'string',
+      required: false,
+      choices: ['ask', 'always', 'never'],
+    },
+    {
+      name: 'reply_signal_review_mode',
+      flag: '--reply-signal-review-mode',
+      summary: 'Signal review behavior for replies.',
+      kind: 'string',
+      required: false,
+      choices: ['ask', 'always', 'never'],
+    },
+    {
+      name: 'repost_quote_signal_review_mode',
+      flag: '--repost-quote-signal-review-mode',
+      summary: 'Signal review behavior for reposts and quotes.',
+      kind: 'string',
+      required: false,
+      choices: ['ask', 'always', 'never'],
     },
   ],
   examples: [

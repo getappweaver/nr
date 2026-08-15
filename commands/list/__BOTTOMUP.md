@@ -13,7 +13,7 @@ children:
 # commands/list
 
 ## Purpose
-Implements the Nostr Radar `list` subcommand, including mode selection, feed-category filtering, cached data retrieval, profile-event refresh, and text/web rendering. It bridges command inputs with stored Nostr resolution data.
+Implements the Nostr Radar `list` subcommand, including mode selection, feed-category and multi-range time filtering, cached data retrieval, profile-event refresh, and text/web rendering. It bridges command inputs with stored Nostr resolution data.
 
 ## Files
 - `adapter.ts` - Coordinates list modes, stored-event hydration, optional profile refresh, and text or web output.
@@ -25,3 +25,4 @@ Implements the Nostr Radar `list` subcommand, including mode selection, feed-cat
 ## Notes
 - Profile mode fetches and resolves recent events from the configured master profile.
 - Timeline and profile category selections are persisted.
+- Timeline coverage can switch from the latest 24 hours to multi-row historical fetched/partial slots that still contain posts visible under the active unread Timeline filters.

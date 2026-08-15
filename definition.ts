@@ -14,6 +14,8 @@ import { parseDefinition } from './commands/parse/definition';
 import { reevaluateDefinition } from './commands/reevaluate/definition';
 import { scheduleDefinition } from './commands/schedule/definition';
 import { settingsDefinition } from './commands/settings/definition';
+import { signalRecordDefinition } from './commands/signal-record/definition';
+import { signalReviewDefinition } from './commands/signal-review/definition';
 import { taxonomyDefinition } from './commands/taxonomy/definition';
 
 export const commandDefinition = (
@@ -34,6 +36,8 @@ export const commandDefinition = (
     markDefinition(prefix, alias),
     reevaluateDefinition(prefix, alias),
     settingsDefinition(prefix, alias),
+    signalReviewDefinition(),
+    signalRecordDefinition(),
     scheduleDefinition(prefix, alias),
     contextDefinition(prefix, alias),
     taxonomyDefinition(),

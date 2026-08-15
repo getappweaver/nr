@@ -164,6 +164,7 @@ export function classifyEvent(event: NostrEvent): EventClassification {
     topics: topics.length > 0 ? topics : ['general'],
     moods: moods.length > 0 ? moods : ['neutral'],
     summary: summarize(event.content),
+    language: 'und',
     model: 'nr-heuristic-v1',
     confidence: topics.length > 0 || moods.length > 0 ? 0.7 : 0.4,
     skip: false,
@@ -265,6 +266,18 @@ function stringArray(value: unknown): string[] {
   );
 }
 
+function languageCode(value: unknown, fallback: string): string {
+  if (typeof value !== 'string') {
+    return fallback;
+  }
+
+  const normalized = value.trim().toLowerCase().replaceAll('_', '-');
+
+  return /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/.test(normalized)
+    ? normalized
+    : fallback;
+}
+
 export function parseAiClassification({
   raw,
   model,
@@ -283,6 +296,8 @@ export function parseAiClassification({
       ? parsed.summary.trim()
       : fallback.summary;
 
+  const language = languageCode(parsed.language, fallback.language);
+
   const confidence =
     typeof parsed.confidence === 'number' && Number.isFinite(parsed.confidence)
       ? Math.max(0, Math.min(1, parsed.confidence))
@@ -299,6 +314,7 @@ export function parseAiClassification({
     topics: topics.length > 0 ? topics : fallback.topics,
     moods: moods.length > 0 ? moods : fallback.moods,
     summary,
+    language,
     model,
     confidence,
     skip,

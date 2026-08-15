@@ -2,6 +2,7 @@ import type { NostrEvent } from '../shared/types';
 
 export const NR_FEED_CATEGORIES = [
   'posts',
+  'long-form',
   'replies',
   'comments',
   'reposts',
@@ -11,10 +12,13 @@ export const NR_FEED_CATEGORIES = [
 
 export type NrFeedCategory = (typeof NR_FEED_CATEGORIES)[number];
 
-export const DEFAULT_NR_FEED_CATEGORIES: NrFeedCategory[] = ['posts'];
+export const DEFAULT_NR_FEED_CATEGORIES: NrFeedCategory[] = [
+  ...NR_FEED_CATEGORIES,
+];
 
 export const NR_FEED_CATEGORY_LABELS: Record<NrFeedCategory, string> = {
   posts: 'Posts',
+  'long-form': 'Long-form posts',
   replies: 'Replies',
   comments: 'NIP-22 comments',
   reposts: 'Reposts',
@@ -59,6 +63,10 @@ export function kindsForNrFeedCategories(
     kinds.add(1111);
   }
 
+  if (categories.includes('long-form')) {
+    kinds.add(30023);
+  }
+
   if (categories.includes('reposts')) {
     kinds.add(6);
     kinds.add(16);
@@ -86,6 +94,10 @@ export function categoryForNrEvent(event: NostrEvent): NrFeedCategory | null {
 
   if (event.kind === 1111) {
     return 'comments';
+  }
+
+  if (event.kind === 30023) {
+    return 'long-form';
   }
 
   if (event.kind === 6 || event.kind === 16) {

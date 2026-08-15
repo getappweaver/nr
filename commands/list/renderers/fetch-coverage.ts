@@ -6,6 +6,7 @@ import type {
   NrFetchWindow,
   NrListData,
   NrListTimeRange,
+  NrUnreadFetchSlot,
 } from '../../shared/types';
 
 import {
@@ -21,6 +22,7 @@ type FetchBucket = {
   fetchUntil: number;
   status: NrFetchStatus | 'unfetched';
   eventCount: number;
+  countKind: 'fetched' | 'unread';
 };
 
 type BucketStatus = Pick<FetchBucket, 'status' | 'eventCount'>;
@@ -28,6 +30,7 @@ type BucketStatus = Pick<FetchBucket, 'status' | 'eventCount'>;
 const FETCH_COVERAGE_HOURS = 24;
 const HOUR_SECONDS = 60 * 60;
 export const NR_TIMELINE_TIME_FILTER_GROUP = 'nr.timeline-slots';
+const NR_UNREAD_SLOTS_TOGGLE_KEY = 'nr.timeline-unread-slots';
 
 export type FetchCoverageBarResult = {
   node: WebNode;
@@ -58,12 +61,37 @@ export const fetchCoverageStylesheet = {
   min-width: 0;
 }
 
-.nr-fetch-button-row > .web-overflow-menu {
+.nr-unread-slot-list {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.nr-unread-slot-chunk {
+  display: grid;
+  gap: 0.16rem;
+}
+
+.nr-unread-slot-range {
+  color: var(--color-text-muted);
+  font-size: 0.68rem;
+  line-height: 1;
+}
+
+.nr-unread-slot-button-row {
+  display: grid;
+  grid-template-columns: repeat(24, minmax(1.3rem, 1fr));
+  gap: 2px;
+  min-width: 0;
+}
+
+.nr-fetch-button-row > .web-overflow-menu,
+.nr-unread-slot-button-row > .web-overflow-menu {
   min-width: 0;
   align-self: stretch;
 }
 
-.nr-fetch-button-row .web-overflow-trigger.nr-fetch-bucket {
+.nr-fetch-button-row .web-overflow-trigger.nr-fetch-bucket,
+.nr-unread-slot-button-row .web-overflow-trigger.nr-fetch-bucket {
   width: 100%;
   margin-right: 0;
   opacity: 1;
@@ -278,6 +306,7 @@ function fetchBuckets(
       fetchUntil: index === 0 ? Math.max(nowSeconds, since + 1) : until,
       status: 'unfetched',
       eventCount: 0,
+      countKind: 'fetched',
     };
 
     const coveredUntil = latestCoveredUntil(fetchWindows, emptyBucket);
@@ -498,14 +527,122 @@ function fetchBucketTitle(bucket: FetchBucket): string {
   }
 
   if (bucket.status === 'fetched') {
-    return `fetched: ${bucket.eventCount} event(s). Coverage interval: ${range}. Open time filter actions.`;
+    return bucket.countKind === 'unread'
+      ? `fetched: ${bucket.eventCount} unread event(s). Coverage interval: ${range}. Open time filter actions.`
+      : `fetched: ${bucket.eventCount} event(s). Coverage interval: ${range}. Open time filter actions.`;
   }
 
   if (bucket.status === 'partial') {
-    return `partial: ${bucket.eventCount} event(s). Coverage interval: ${range}. Open actions to fetch again or change the time filter.`;
+    return bucket.countKind === 'unread'
+      ? `partial: ${bucket.eventCount} unread event(s). Coverage interval: ${range}. Open actions to fetch again or change the time filter.`
+      : `partial: ${bucket.eventCount} event(s). Coverage interval: ${range}. Open actions to fetch again or change the time filter.`;
   }
 
   return `${bucket.status}: ${bucket.eventCount} event(s). Coverage interval: ${range}. Click to fetch missing/latest slice: ${fetchRange}`;
+}
+
+function unreadFetchBucket(slot: NrUnreadFetchSlot): FetchBucket {
+  return {
+    since: slot.since,
+    until: slot.until,
+    fetchSince: slot.since,
+    fetchUntil: slot.until,
+    status: slot.status,
+    eventCount: slot.unreadCount,
+    countKind: 'unread',
+  };
+}
+
+function chunkUnreadSlots(slots: NrUnreadFetchSlot[]): NrUnreadFetchSlot[][] {
+  const chunks: NrUnreadFetchSlot[][] = [];
+
+  for (let index = 0; index < slots.length; index += FETCH_COVERAGE_HOURS) {
+    chunks.push(slots.slice(index, index + FETCH_COVERAGE_HOURS));
+  }
+
+  return chunks;
+}
+
+function unreadChunkLabel(slots: NrUnreadFetchSlot[]): string {
+  const newest = slots[0];
+  const oldest = slots.at(-1);
+
+  if (!newest || !oldest) {
+    return '';
+  }
+
+  return `${new Date(newest.since * 1000).toLocaleString()} → ${new Date(
+    oldest.since * 1000,
+  ).toLocaleString()}`;
+}
+
+function unreadSlotsNode(alias: string, listData: NrListData): WebNode {
+  const chunks = chunkUnreadSlots(listData.unreadFetchSlots);
+
+  return el(
+    'stack',
+    {
+      className: 'nr-unread-slot-list',
+      visibleWhenToggleKey: NR_UNREAD_SLOTS_TOGGLE_KEY,
+    },
+    chunks.length > 0
+      ? chunks.map((slots) =>
+          el('stack', { className: 'nr-unread-slot-chunk' }, [
+            el('text', { className: 'nr-unread-slot-range' }, [
+              text(unreadChunkLabel(slots)),
+            ]),
+            el(
+              'row',
+              { className: 'nr-unread-slot-button-row' },
+              slots.map((slot) =>
+                fetchBucketNode({
+                  alias,
+                  bucket: unreadFetchBucket(slot),
+                  mode: listData.mode,
+                  selectedTimeRanges: listData.selectedTimeRanges,
+                }),
+              ),
+            ),
+          ]),
+        )
+      : [
+          el('text', { tone: 'muted', size: 'sm' }, [
+            text('No fetched slots contain unread events.'),
+          ]),
+        ],
+  );
+}
+
+function unreadSlotsToggle(count: number): WebNode {
+  const action = {
+    type: 'clientAction' as const,
+    action: 'web.toggle',
+    payload: { key: NR_UNREAD_SLOTS_TOGGLE_KEY },
+  };
+
+  return el('row', { gap: 'xs', itemAlign: 'center' }, [
+    el(
+      'checkbox',
+      {
+        checked: false,
+        className: 'web-checkbox--retro',
+        hiddenWhenToggleKey: NR_UNREAD_SLOTS_TOGGLE_KEY,
+        action,
+      },
+      [],
+    ),
+    el(
+      'checkbox',
+      {
+        checked: true,
+        className: 'web-checkbox--retro',
+        visibleWhenToggleKey: NR_UNREAD_SLOTS_TOGGLE_KEY,
+        action,
+      },
+      [],
+    ),
+    el('text', { size: 'sm' }, [text(`Show unread slots (${count})`)]),
+  ]);
 }
 
 export function fetchCoverageBar(
@@ -519,9 +656,10 @@ export function fetchCoverageBar(
 
   const labels = fetchBoundaryLabels(buckets);
 
-  const rangeKeys = buckets.map((bucket) =>
-    nrListTimeRangeKey(bucketRange(bucket)),
-  );
+  const rangeKeys = [
+    ...buckets.map((bucket) => nrListTimeRangeKey(bucketRange(bucket))),
+    ...listData.unreadFetchSlots.map((slot) => nrListTimeRangeKey(slot)),
+  ];
 
   const node = el('stack', { id: 'nr-fetch-coverage', gap: 'xs' }, [
     el('row', { gap: 'xs', itemAlign: 'baseline', align: 'between' }, [
@@ -534,6 +672,7 @@ export function fetchCoverageBar(
         ),
       ]),
     ]),
+    unreadSlotsToggle(listData.unreadFetchSlots.length),
     el(
       'treeTimeFilterStatus',
       {
@@ -549,27 +688,35 @@ export function fetchCoverageBar(
       },
       [],
     ),
-    el('box', { className: 'nr-fetch-coverage-bar' }, [
-      el(
-        'row',
-        { className: 'nr-fetch-label-row' },
-        labels.map((label) =>
-          el('text', { className: 'nr-fetch-label' }, [text(label)]),
+    el(
+      'box',
+      {
+        className: 'nr-fetch-coverage-bar',
+        hiddenWhenToggleKey: NR_UNREAD_SLOTS_TOGGLE_KEY,
+      },
+      [
+        el(
+          'row',
+          { className: 'nr-fetch-label-row' },
+          labels.map((label) =>
+            el('text', { className: 'nr-fetch-label' }, [text(label)]),
+          ),
         ),
-      ),
-      el(
-        'row',
-        { className: 'nr-fetch-button-row' },
-        buckets.map((bucket) =>
-          fetchBucketNode({
-            alias,
-            bucket,
-            mode: listData.mode,
-            selectedTimeRanges: listData.selectedTimeRanges,
-          }),
+        el(
+          'row',
+          { className: 'nr-fetch-button-row' },
+          buckets.map((bucket) =>
+            fetchBucketNode({
+              alias,
+              bucket,
+              mode: listData.mode,
+              selectedTimeRanges: listData.selectedTimeRanges,
+            }),
+          ),
         ),
-      ),
-    ]),
+      ],
+    ),
+    unreadSlotsNode(alias, listData),
     {
       ...(el(
         'treeItem',

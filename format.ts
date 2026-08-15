@@ -48,6 +48,8 @@ export function formatNrListData(listData: NrListData): string {
     ...formatGroups('Topics', listData.topicGroups),
     '',
     ...formatGroups('Moods', listData.moodGroups),
+    '',
+    ...formatGroups('Languages', listData.languageGroups),
   ].join('\n');
 }
 

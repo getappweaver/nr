@@ -2,7 +2,7 @@ import type { SubcommandDefinition } from '@src/system/command-definition';
 
 export const taxonomyDefinition = (): SubcommandDefinition => ({
   name: 'taxonomy',
-  summary: 'Manage manually preferred topic/mood terms for classification.',
+  summary: 'Manage manual topic preferences and mood terms for classification.',
   aliases: [],
   arguments: [],
   options: [
@@ -31,15 +31,54 @@ export const taxonomyDefinition = (): SubcommandDefinition => ({
       multiple: true,
     },
     {
+      name: 'interested_tags',
+      flag: '--interested-tags',
+      summary: 'Manual topics the user wants to see.',
+      kind: 'string',
+      required: false,
+      multiple: true,
+    },
+    {
+      name: 'uninterested_tags',
+      flag: '--uninterested-tags',
+      summary: 'Manual topics the user wants to skip.',
+      kind: 'string',
+      required: false,
+      multiple: true,
+    },
+    {
       name: 'new_tag',
       flag: '--new-tag',
       summary: 'Optional new manual tag to add.',
       kind: 'string',
       required: false,
     },
+    {
+      name: 'new_interested_tag',
+      flag: '--new-interested-tag',
+      summary: 'Optional interested topic to add.',
+      kind: 'string',
+      required: false,
+    },
+    {
+      name: 'new_uninterested_tag',
+      flag: '--new-uninterested-tag',
+      summary: 'Optional uninterested topic to add.',
+      kind: 'string',
+      required: false,
+    },
+    {
+      name: 'preference',
+      flag: '--preference',
+      summary: 'Preference used by add mode for a topic.',
+      kind: 'string',
+      required: false,
+      choices: ['interested', 'uninterested'],
+    },
   ],
   examples: [
     '/nr taxonomy --type topic',
+    '/nr taxonomy --type topic --mode add --preference uninterested --new-tag sports',
     '/nr taxonomy --type mood --mode save --active-tags funny --new-tag serious',
     '/nr taxonomy --type topic --mode add --new-tag nostr',
   ],

@@ -43,10 +43,10 @@ Nostr Radar is an AppWeaver plugin for fetching, classifying, storing, and revie
 - `ai.ts` - Exposes the Nostr Radar AI tool definition, database opener, execution bridge, and agent instructions.
 - `CHANGELOG.md` - Lists tagged Nostr Radar release changes.
 - `classifier-ai.ts` - Runs configured agent-backed event classification with contextual references, reactions, and heuristic fallback.
-- `classifier.ts` - Provides heuristic classification plus prompt construction and resilient parsing for AI classification results.
-- `context.ts` - Builds taxonomy and existing-tag context text for classification prompts.
+- `classifier.ts` - Provides heuristic classification plus prompt construction and resilient parsing, including normalized primary-language codes, for AI classification results.
+- `context.ts` - Builds compact classifier interest context from explicit topic preferences and separately ranked positive/negative interest signals.
 - `db.test.ts` - Covers event storage behavior around shared-cache seeding, classification reuse, and read/archive preservation.
-- `db.ts` - Owns the plugin SQLite schema and persistence APIs for events, classification, fetching, preferences, taxonomy, and feeds.
+- `db.ts` - Owns the plugin SQLite schema and persistence APIs for events, classification, fetching, visible historical unread-slot aggregation, preferences, preference-aware taxonomy, and feeds.
 - `definition.ts` - Defines the structured `/nr` command and its available subcommands.
 - `format.ts` - Formats Nostr Radar lists and event details for text responses.
 - `init.ts` - Registers and initializes the Nostr Radar plugin, command handler, help text, database, and AI definition.
@@ -55,7 +55,7 @@ Nostr Radar is an AppWeaver plugin for fetching, classifying, storing, and revie
 - `package.json` - Declares plugin metadata, compatibility requirements, and maintenance scripts.
 - `README.md` - Template placeholder for user-facing plugin documentation.
 - `references.ts` - Extracts Nostr event, profile, and address references from content and fetches referenced events.
-- `settings.ts` - Defines persisted classification, sharing, and concurrency settings with their defaults.
+- `settings.ts` - Defines persisted classification, sharing, and concurrency settings, including default interest guidance and BCP 47 language output instructions.
 - `thread-context.ts` - Extracts NIP-10 thread references and fetches their context events.
 
 ## Notes
@@ -65,5 +65,6 @@ Nostr Radar is an AppWeaver plugin for fetching, classifying, storing, and revie
 
 ## Subdirectories
 - `commands/` - Nostr Radar command layer organized by subcommand, including contracts, execution, and rendering.
+- `docs/` - Standalone design references for substantial Nostr Radar features, including reviewed interest-signal creation.
 - `scripts/` - Maintenance and data-seeding scripts for Nostr cache/context migration and recommendation signals.
 - `types/` - Defines parsed-command adapter and runtime-context parameter types.

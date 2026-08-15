@@ -1,4 +1,4 @@
-import { recordNrInteraction, recordNrInterestSignal } from '../../db';
+import { recordNrInteraction } from '../../db';
 import type { NrCommandAdapterParams } from '../../types/adapter-params';
 
 import type { NrInteractionType } from '../shared/types';
@@ -69,23 +69,6 @@ export function adaptInteractionRecordCommand(
     type,
     interactionCreatedAt,
     source: 'web',
-  });
-
-  const signalType = {
-    liked: 'like',
-    replied: 'reply',
-    reposted: 'repost',
-    quoted: 'quote',
-  } as const;
-
-  recordNrInterestSignal({
-    db: params.db,
-    targetEventId,
-    type: signalType[type],
-    createdAt: interactionCreatedAt * 1000,
-    topics: null,
-    moods: null,
-    source: 'interaction',
   });
 
   return `Recorded ${type}: ${targetEventId}`;

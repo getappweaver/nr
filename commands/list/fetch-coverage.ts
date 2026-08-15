@@ -17,9 +17,15 @@ type Interval = {
 type CalculateNrFetchCoverageProps = {
   fetchWindows: NrFetchWindow[];
   nowSeconds: number;
+  hours: number;
 };
 
-const FETCH_COVERAGE_HOURS = 24;
+type CalculateNrFetchCoverageBucketsProps = {
+  fetchWindows: NrFetchWindow[];
+  nowSeconds: number;
+  bucketStarts: number[];
+};
+
 const HOUR_SECONDS = 60 * 60;
 
 function hourStart(timestampSeconds: number): number {
@@ -123,14 +129,33 @@ function bucketStatus({
 export function calculateNrFetchCoverage({
   fetchWindows,
   nowSeconds,
+  hours,
 }: CalculateNrFetchCoverageProps): NrFetchCoverageBucket[] {
   const currentHourStart = hourStart(nowSeconds);
 
-  return Array.from({ length: FETCH_COVERAGE_HOURS }, (_, index) => {
-    const since = currentHourStart - index * HOUR_SECONDS;
+  return calculateNrFetchCoverageBuckets({
+    fetchWindows,
+    nowSeconds,
+    bucketStarts: Array.from(
+      { length: hours },
+      (_, index) => currentHourStart - index * HOUR_SECONDS,
+    ),
+  });
+}
 
-    const fetchUntil =
-      index === 0 ? Math.max(nowSeconds, since + 1) : since + HOUR_SECONDS;
+export function calculateNrFetchCoverageBuckets({
+  fetchWindows,
+  nowSeconds,
+  bucketStarts,
+}: CalculateNrFetchCoverageBucketsProps): NrFetchCoverageBucket[] {
+  const currentHourStart = hourStart(nowSeconds);
+
+  return bucketStarts.map((since) => {
+    const isCurrentHour = since === currentHourStart;
+
+    const fetchUntil = isCurrentHour
+      ? Math.max(nowSeconds, since + 1)
+      : since + HOUR_SECONDS;
 
     const bucket: NrFetchCoverageBucket = {
       since,

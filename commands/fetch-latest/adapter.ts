@@ -329,7 +329,7 @@ async function fetchRelayGroupPages({
         operation: params.storedCtx.pool.querySync(
           [group.relay],
           {
-            kinds: [1, 6, 7, 16, 1111],
+            kinds: [1, 6, 7, 16, 1111, 30023],
             authors,
             since,
             until: nextUntil,
@@ -910,6 +910,7 @@ async function runFetchEvaluate({
               topics: [],
               moods: [],
               summary: '',
+              language: 'und',
               model: 'activity',
               confidence: 1,
               skip: false,

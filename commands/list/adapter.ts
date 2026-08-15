@@ -103,6 +103,7 @@ function collectProfilePubkeys(listData: NrListData): string[] {
   const events: NrEvent[] = [
     ...listData.topicGroups.flatMap((group) => group.events),
     ...listData.moodGroups.flatMap((group) => group.events),
+    ...listData.languageGroups.flatMap((group) => group.events),
     ...listData.forYouEvents,
     ...listData.activityEvents,
   ];
@@ -190,6 +191,7 @@ async function runListCommand(
   const storedEvents = [
     ...listData.topicGroups.flatMap((group) => group.events),
     ...listData.moodGroups.flatMap((group) => group.events),
+    ...listData.languageGroups.flatMap((group) => group.events),
     ...listData.forYouEvents,
     ...listData.activityEvents,
   ];

@@ -1,0 +1,103 @@
+import type { SubcommandDefinition } from '@src/system/command-definition';
+
+export const signalRecordDefinition = (): SubcommandDefinition => ({
+  name: 'signal-record',
+  summary: 'Persist a web-only reviewed Nostr Radar signal decision.',
+  aliases: [],
+  arguments: [],
+  options: [
+    {
+      name: 'target_event_id',
+      flag: '--target-event-id',
+      summary: 'Canonical target event id.',
+      kind: 'string',
+      required: true,
+    },
+    {
+      name: 'action_category',
+      flag: '--action-category',
+      summary: 'Action category being recorded.',
+      kind: 'string',
+      required: true,
+      choices: [
+        'archive',
+        'like',
+        'reply',
+        'repost_quote',
+        'local_like',
+        'local_dislike',
+      ],
+    },
+    {
+      name: 'signal_type',
+      flag: '--signal-type',
+      summary: 'Exact signal type for shared categories like repost/quote.',
+      kind: 'string',
+      required: false,
+      choices: [
+        'like',
+        'reply',
+        'repost',
+        'quote',
+        'archive',
+        'local_like',
+        'local_dislike',
+      ],
+    },
+    {
+      name: 'signal_outcome',
+      flag: '--signal-outcome',
+      summary: 'Reviewed decision outcome.',
+      kind: 'string',
+      required: true,
+      choices: ['create', 'without_signal'],
+    },
+    {
+      name: 'signal_topics',
+      flag: '--signal-topic',
+      summary: 'Selected signal topic.',
+      kind: 'string',
+      required: false,
+      multiple: true,
+    },
+    {
+      name: 'signal_author_pubkey',
+      flag: '--signal-author-pubkey',
+      summary: 'Selected target author pubkey.',
+      kind: 'string',
+      required: false,
+    },
+    {
+      name: 'signal_remember',
+      flag: '--signal-remember',
+      summary: "Persist don't-ask-again mode after a successful action.",
+      kind: 'boolean',
+      required: false,
+    },
+    {
+      name: 'target_author_pubkey',
+      flag: '--target-author-pubkey',
+      summary:
+        'Trusted web-rendered target author fallback for uncached targets.',
+      kind: 'string',
+      required: false,
+    },
+    {
+      name: 'target_event_json',
+      flag: '--target-event-json',
+      summary: 'Verified raw target event fallback for referenced posts.',
+      kind: 'string',
+      required: false,
+    },
+    {
+      name: 'candidate_topics',
+      flag: '--candidate-topic',
+      summary:
+        'Trusted web-rendered candidate topic fallback for uncached targets.',
+      kind: 'string',
+      required: false,
+      multiple: true,
+    },
+  ],
+  examples: [],
+});

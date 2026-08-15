@@ -4,9 +4,13 @@ All notable changes for each version are listed under the corresponding `v*.*.*`
 Tags and this file are updated by the post-commit hook when you commit with `--patch`, `--minor`, or `--major` (see CONTRIBUTING.md).
 You can also run `bun run release:changelog` to rewrite this file from tags.
 
+## [v2.0.0] - 2026-08-15
+
+- feat: add reviewed signals and richer radar feeds (4a49ce8)
+
 ## [v1.2.0] - 2026-08-02
 
-- feat: add time-filtered radar views and author controls (956cfd2)
+- feat: add time-filtered radar views and author controls (0cdc2fd)
 
 ## [v1.1.0] - 2026-07-30
 

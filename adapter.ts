@@ -25,6 +25,8 @@ import { adaptReadCommand } from './commands/read/adapter';
 import { adaptReevaluateCommand } from './commands/reevaluate/adapter';
 import { adaptScheduleCommand } from './commands/schedule/adapter';
 import { adaptSettingsCommand } from './commands/settings/adapter';
+import { adaptSignalRecordCommand } from './commands/signal-record/adapter';
+import { adaptSignalReviewCommand } from './commands/signal-review/adapter';
 import { adaptTaxonomyCommand } from './commands/taxonomy/adapter';
 import type {
   NrCommandAdapterParams,
@@ -39,6 +41,8 @@ type NrSubcommand =
   | 'reevaluate'
   | 'reclassify'
   | 'settings'
+  | 'signal-review'
+  | 'signal-record'
   | 'schedule'
   | 'context'
   | 'taxonomy'
@@ -71,6 +75,8 @@ const subcommandAdapters: Record<NrSubcommand, NrCommandAdapter> = {
   reevaluate: adaptReevaluateCommand,
   reclassify: adaptReevaluateCommand,
   settings: adaptSettingsCommand,
+  'signal-review': adaptSignalReviewCommand,
+  'signal-record': adaptSignalRecordCommand,
   schedule: adaptScheduleCommand,
   context: adaptContextCommand,
   taxonomy: adaptTaxonomyCommand,
@@ -113,6 +119,8 @@ function isNrSubcommand(value: string): value is NrSubcommand {
     value === 'reevaluate' ||
     value === 'reclassify' ||
     value === 'settings' ||
+    value === 'signal-review' ||
+    value === 'signal-record' ||
     value === 'schedule' ||
     value === 'context' ||
     value === 'taxonomy' ||
@@ -222,6 +230,7 @@ export async function handleNrAdapter({
       runAgent,
       sendReply,
       storedCtx,
+      jsonPayload,
     });
   } catch (err) {
     return String(err instanceof Error ? err.message : err);

@@ -8,6 +8,7 @@ import {
   getNrSettings,
   resetNrSettings,
   saveNrSchedulerResource,
+  type NrSignalReviewMode,
   saveNrSettings,
 } from '../../settings';
 import type { NrCommandAdapterParams } from '../../types/adapter-params';
@@ -74,6 +75,21 @@ function parseBackend(value: unknown): AgentBackendName | null | undefined {
   throw new Error('backend must be cursor or opencode');
 }
 
+function parseSignalReviewMode(
+  value: unknown,
+  label: string,
+): NrSignalReviewMode | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+
+  if (value === 'ask' || value === 'always' || value === 'never') {
+    return value;
+  }
+
+  throw new Error(`${label} must be ask, always, or never.`);
+}
+
 function parsePositiveInteger(value: unknown): number | undefined {
   if (value === undefined || value === null || value === '') {
     return undefined;
@@ -89,19 +105,69 @@ function parsePositiveInteger(value: unknown): number | undefined {
   return parsed;
 }
 
+const SIGNAL_REVIEW_MODE_CHOICES: NrSignalReviewMode[] = [
+  'ask',
+  'always',
+  'never',
+];
+
+const SIGNAL_REVIEW_MODE_LABELS: Record<NrSignalReviewMode, string> = {
+  ask: 'Ask every time',
+  always: 'Always create signal',
+  never: 'Never create signal',
+};
+
+function signalReviewSelectNodes(
+  settings: ReturnType<typeof getNrSettings>,
+): WebNode[] {
+  return [
+    ['archive_signal_review_mode', 'Archive', settings.archiveSignalReviewMode],
+    ['like_signal_review_mode', 'Like', settings.likeSignalReviewMode],
+    ['reply_signal_review_mode', 'Reply', settings.replySignalReviewMode],
+    [
+      'repost_quote_signal_review_mode',
+      'Repost / Quote',
+      settings.repostQuoteSignalReviewMode,
+    ],
+  ].map(([fieldName, label, value]) =>
+    el('row', { gap: 'xs', itemAlign: 'center' }, [
+      el('text', { size: 'sm' }, [text(`${label}:`)]),
+      el(
+        'select',
+        {
+          formFieldName: fieldName,
+          value,
+          choices: SIGNAL_REVIEW_MODE_CHOICES,
+          choiceLabels: SIGNAL_REVIEW_MODE_LABELS,
+        },
+        [],
+      ),
+    ]),
+  );
+}
+
 function formatSettings(settings: ReturnType<typeof getNrSettings>): string {
   return [
-    'nr parse AI settings:',
+    'Nostr radar settings:',
     `Backend: ${settings.backend ?? '(default)'}`,
     `Model: ${settings.model ?? '(default)'}`,
     `Event share URL: ${settings.eventSharePrefix}`,
     `Profile share URL: ${settings.profileSharePrefix}`,
+    `Default language: ${settings.defaultLanguage ?? 'en'}`,
     `Translation target language: ${settings.translationTargetLanguage ?? 'en'}`,
     `Filter to latest fetched hour on open: ${
       settings.filterToLatestFetchedSlotOnOpen ? 'enabled' : 'disabled'
     }`,
     `Relay fetch concurrency: ${settings.relayFetchConcurrency}`,
     `AI evaluation concurrency: ${settings.aiEvaluationConcurrency}`,
+    '',
+    'Signal review:',
+    `Archive: ${SIGNAL_REVIEW_MODE_LABELS[settings.archiveSignalReviewMode]}`,
+    `Like: ${SIGNAL_REVIEW_MODE_LABELS[settings.likeSignalReviewMode]}`,
+    `Reply: ${SIGNAL_REVIEW_MODE_LABELS[settings.replySignalReviewMode]}`,
+    `Repost / Quote: ${
+      SIGNAL_REVIEW_MODE_LABELS[settings.repostQuoteSignalReviewMode]
+    }`,
     '',
     'Instructions:',
     settings.instructions,
@@ -217,11 +283,16 @@ function renderSettingsWeb({
             'instructions',
             'event_share_prefix',
             'profile_share_prefix',
+            'default_language',
             'translation_target_language',
             'hourly_scheduler',
             'filter_to_latest_fetched_slot_on_open',
             'relay_fetch_concurrency',
             'ai_evaluation_concurrency',
+            'archive_signal_review_mode',
+            'like_signal_review_mode',
+            'reply_signal_review_mode',
+            'repost_quote_signal_review_mode',
           ],
           action: {
             type: 'command',
@@ -236,6 +307,10 @@ function renderSettingsWeb({
         },
         [
           el('text', { weight: 'semibold' }, [text('Nostr radar settings')]),
+          el('text', { weight: 'semibold', size: 'sm' }, [
+            text('Signal review'),
+          ]),
+          ...signalReviewSelectNodes(settings),
           el('text', { weight: 'semibold', size: 'sm' }, [text('AI backend')]),
           el(
             'select',
@@ -311,6 +386,20 @@ function renderSettingsWeb({
               inputPlaceholder:
                 'nostr:// or https://jumble.social/users/[nprofile]',
               value: settings.profileSharePrefix,
+            },
+            [],
+          ),
+          el('text', { weight: 'semibold', size: 'sm' }, [
+            text('Default language'),
+          ]),
+          el(
+            'textField',
+            {
+              formFieldName: 'default_language',
+              inputPlaceholder: 'en (reset = English)',
+              value: settings.defaultLanguage ?? '',
+              choices: ['reset', 'en'],
+              choiceLabels: { reset: 'Clear / use English' },
             },
             [],
           ),
@@ -470,12 +559,12 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
       return renderSettingsResult({
         params,
         settings,
-        message: 'Reset nr parse AI settings.',
+        message: 'Reset Nostr radar settings.',
         schedulerSetupNeeded: false,
       });
     }
 
-    return ['Reset nr parse AI settings.', formatSettings(settings)].join(
+    return ['Reset Nostr radar settings.', formatSettings(settings)].join(
       '\n\n',
     );
   }
@@ -500,6 +589,13 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
     params.parsed.options.translation_target_language,
   );
 
+  const defaultLanguageValue = asOptionalStringOverride(
+    params.parsed.options.default_language,
+  );
+
+  const defaultLanguage =
+    defaultLanguageValue === 'reset' ? null : defaultLanguageValue;
+
   const translationTargetLanguage =
     translationTargetLanguageValue === 'reset'
       ? null
@@ -521,17 +617,42 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
     params.parsed.options.filter_to_latest_fetched_slot_on_open,
   );
 
+  const archiveSignalReviewMode = parseSignalReviewMode(
+    params.parsed.options.archive_signal_review_mode,
+    'Archive signal review mode',
+  );
+
+  const likeSignalReviewMode = parseSignalReviewMode(
+    params.parsed.options.like_signal_review_mode,
+    'Like signal review mode',
+  );
+
+  const replySignalReviewMode = parseSignalReviewMode(
+    params.parsed.options.reply_signal_review_mode,
+    'Reply signal review mode',
+  );
+
+  const repostQuoteSignalReviewMode = parseSignalReviewMode(
+    params.parsed.options.repost_quote_signal_review_mode,
+    'Repost/quote signal review mode',
+  );
+
   const hasUpdates =
     backend !== undefined ||
     model !== undefined ||
     instructions !== undefined ||
     eventSharePrefix !== undefined ||
     profileSharePrefix !== undefined ||
+    defaultLanguage !== undefined ||
     translationTargetLanguage !== undefined ||
     filterToLatestFetchedSlotOnOpen !== undefined ||
     hourlySchedulerRequested ||
     relayFetchConcurrency !== undefined ||
-    aiEvaluationConcurrency !== undefined;
+    aiEvaluationConcurrency !== undefined ||
+    archiveSignalReviewMode !== undefined ||
+    likeSignalReviewMode !== undefined ||
+    replySignalReviewMode !== undefined ||
+    repostQuoteSignalReviewMode !== undefined;
 
   if (!hasUpdates) {
     const settings = getNrSettings(params.db);
@@ -564,6 +685,8 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
       profileSharePrefix === undefined
         ? current.profileSharePrefix
         : (profileSharePrefix ?? ''),
+    defaultLanguage:
+      defaultLanguage === undefined ? current.defaultLanguage : defaultLanguage,
     translationTargetLanguage:
       translationTargetLanguage === undefined
         ? current.translationTargetLanguage
@@ -575,6 +698,13 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
       relayFetchConcurrency ?? current.relayFetchConcurrency,
     aiEvaluationConcurrency:
       aiEvaluationConcurrency ?? current.aiEvaluationConcurrency,
+    archiveSignalReviewMode:
+      archiveSignalReviewMode ?? current.archiveSignalReviewMode,
+    likeSignalReviewMode: likeSignalReviewMode ?? current.likeSignalReviewMode,
+    replySignalReviewMode:
+      replySignalReviewMode ?? current.replySignalReviewMode,
+    repostQuoteSignalReviewMode:
+      repostQuoteSignalReviewMode ?? current.repostQuoteSignalReviewMode,
   });
 
   let schedulerSetupNeeded = false;
@@ -601,10 +731,10 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
       settings: next,
       message: schedulerCreated
         ? 'Saved settings and created the hourly scheduler.'
-        : 'Saved nr parse AI settings.',
+        : 'Saved Nostr radar settings.',
       schedulerSetupNeeded,
     });
   }
 
-  return ['Saved nr parse AI settings.', formatSettings(next)].join('\n\n');
+  return ['Saved Nostr radar settings.', formatSettings(next)].join('\n\n');
 }

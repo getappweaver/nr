@@ -33,12 +33,13 @@ export const NrEventSchema = z.object({
   classification_json: z.string(),
   topics: z.array(z.string()),
   moods: z.array(z.string()),
+  language: z.string(),
 });
 
 export type NrEvent = z.infer<typeof NrEventSchema>;
 
 export type NrTagGroup = {
-  type: 'topic' | 'mood';
+  type: 'topic' | 'mood' | 'language';
   tag: string;
   unreadCount: number;
   events: NrEvent[];
@@ -56,6 +57,13 @@ export type NrListTimeRangeSource = 'request' | 'latest-fetched-slot' | 'none';
 export type NrListTimeSelection = {
   initialized: boolean;
   ranges: NrListTimeRange[];
+};
+
+export type NrUnreadFetchSlot = {
+  since: number;
+  until: number;
+  status: Extract<NrFetchStatus, 'fetched' | 'partial'>;
+  unreadCount: number;
 };
 
 export type NrFetchScope = 'follows';
@@ -124,6 +132,7 @@ export type NrInterestSignal = {
   weight: number;
   topics: string[];
   moods: string[];
+  authorPubkey: string | null;
   source: 'interaction' | 'archive' | 'private' | 'seed';
   createdAt: number;
   updatedAt: number;
@@ -140,11 +149,14 @@ export type NrAuthorPreference = {
 
 export type NrTaxonomyTermType = 'topic' | 'mood';
 
+export type NrTaxonomyPreference = 'interested' | 'uninterested';
+
 export type NrTaxonomyTerm = {
   id: number;
   type: NrTaxonomyTermType;
   tag: string;
   description: string | null;
+  preference: NrTaxonomyPreference;
   active: boolean;
   createdAt: number;
   updatedAt: number;
@@ -163,9 +175,11 @@ export type NrListData = {
   activityEvents: NrEvent[];
   topicGroups: NrTagGroup[];
   moodGroups: NrTagGroup[];
+  languageGroups: NrTagGroup[];
   unreadTotal: number;
   fetchCoverageNowSeconds: number;
   fetchWindows: NrFetchWindow[];
+  unreadFetchSlots: NrUnreadFetchSlot[];
   interactions: NrInteraction[];
   interestSignals: NrInterestSignal[];
   authorPreferences: NrAuthorPreference[];
@@ -188,6 +202,7 @@ export type EventClassification = {
   topics: string[];
   moods: string[];
   summary: string;
+  language: string;
   model: string;
   confidence: number;
   skip: boolean;

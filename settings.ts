@@ -7,26 +7,34 @@ import {
 import type { AgentBackendName } from '@src/db';
 import type { NostrSharePrefixes } from '@src/web/nostr-share';
 
+export type NrSignalReviewMode = 'ask' | 'always' | 'never';
+
 export type NrSettings = {
   backend: AgentBackendName | null;
   model: string | null;
   instructions: string;
   eventSharePrefix: string;
   profileSharePrefix: string;
+  defaultLanguage: string | null;
   translationTargetLanguage: string | null;
   filterToLatestFetchedSlotOnOpen: boolean;
   relayFetchConcurrency: number;
   aiEvaluationConcurrency: number;
+  archiveSignalReviewMode: NrSignalReviewMode;
+  likeSignalReviewMode: NrSignalReviewMode;
+  replySignalReviewMode: NrSignalReviewMode;
+  repostQuoteSignalReviewMode: NrSignalReviewMode;
 };
 
 export const DEFAULT_NR_SHARE_PREFIX = 'nostr://';
 export const DEFAULT_NR_RELAY_FETCH_CONCURRENCY = 3;
 export const DEFAULT_NR_AI_EVALUATION_CONCURRENCY = 2;
 export const DEFAULT_NR_FILTER_TO_LATEST_FETCHED_SLOT_ON_OPEN = true;
+export const DEFAULT_NR_SIGNAL_REVIEW_MODE: NrSignalReviewMode = 'ask';
 
 export const DEFAULT_NR_CLASSIFICATION_INSTRUCTIONS = `Classify this Nostr event for a personal unread radar.
 
-Existing taxonomy context:
+Interest context:
 $NR_CONTEXT
 
 Return ONLY JSON with this shape:
@@ -34,6 +42,7 @@ Return ONLY JSON with this shape:
   "topics": ["short-topic-tags"],
   "moods": ["short-mood-tags"],
   "summary": "one concise sentence",
+  "language": "en",
   "confidence": 0.0,
   "skip": boolean,
   "skipReason": string | null
@@ -43,8 +52,12 @@ Guidelines:
 - Use lowercase, compact, hyphenated tags.
 - Treat topics as search/index keywords that identify the concrete subjects of the event.
 - Moods describe tone or intent.
+- Set "language" to the lowercase BCP 47 code for the event's primary language, such as "en", "tr", or "de". Use "und" only when no language can be determined.
 - Make the topics cover the same concrete details captured by the summary.
-- Treat the existing taxonomy as suggestions, not a closed vocabulary. Reuse a tag only when it is an exact semantic match.
+- Treat interested topics and positive-signal topics as evidence that the user wants to see events centrally about those subjects.
+- Treat uninterested topics and negative-signal topics as evidence that the user wants to skip events centrally about those subjects. Manual preferences override inferred signals, and a central interested topic can outweigh an inferred negative topic.
+- Do not skip an event merely because it does not match an interested topic, and do not skip for an incidental mention of an uninterested topic.
+- Set "skip": true when the event is primarily about an uninterested or negative-signal topic and has no stronger interested-topic reason to retain it.
 - Prefer 2-5 topics and 1-3 moods when the event has enough detail.
 - Keep one useful broad anchor when relevant, then add specific keywords for the central entities, concepts, and relationships.
 - Include named organizations, people, legislation, protocols, products, projects, assets, releases, locations, events, and concrete subtopics when central to the event. Examples include "ditto", "opus-5", "shakespeare", "nip-55", and "clarity-act".
@@ -52,10 +65,9 @@ Guidelines:
 - Prefer varied, specific vocabulary over repeatedly falling back to a small set of broad categories. Do not use "informative", "technical", "casual", "personal", "social", or "general" as topics when concrete keywords are available.
 - Use moods only for an expressed tone or intent, not content type. For example, do not use "informative" as a mood.
 - If unsure, use topic "general" and mood "neutral".
-- Set "skip": true only when the event is not useful for this user's unread radar, only if the user is defined that below.
 - If "skip": true, explain briefly in "skipReason".
 - If "skip": false, use "skipReason": null.
-- Still fill topics, moods, summary, and confidence even when "skip": true.`;
+- Still fill topics, moods, summary, language, and confidence even when "skip": true.`;
 
 const SETTINGS_KEYS = {
   backend: 'backend',
@@ -63,10 +75,15 @@ const SETTINGS_KEYS = {
   instructions: 'instructions',
   eventSharePrefix: 'event_share_prefix',
   profileSharePrefix: 'profile_share_prefix',
+  defaultLanguage: 'default_language',
   translationTargetLanguage: 'translation_target_language',
   filterToLatestFetchedSlotOnOpen: 'filter_to_latest_fetched_slot_on_open',
   relayFetchConcurrency: 'relay_fetch_concurrency',
   aiEvaluationConcurrency: 'ai_evaluation_concurrency',
+  archiveSignalReviewMode: 'archive_signal_review_mode',
+  likeSignalReviewMode: 'like_signal_review_mode',
+  replySignalReviewMode: 'reply_signal_review_mode',
+  repostQuoteSignalReviewMode: 'repost_quote_signal_review_mode',
 } as const;
 
 const SCHEDULER_RESOURCE_KEY = 'scheduler_resource';
@@ -139,6 +156,14 @@ function booleanSetting(value: string | null, fallback: boolean): boolean {
   return fallback;
 }
 
+function signalReviewMode(value: string | null): NrSignalReviewMode {
+  if (value === 'ask' || value === 'always' || value === 'never') {
+    return value;
+  }
+
+  return DEFAULT_NR_SIGNAL_REVIEW_MODE;
+}
+
 export function nrSharePrefixes(settings: NrSettings): NostrSharePrefixes {
   return {
     nevent: settings.eventSharePrefix,
@@ -159,6 +184,7 @@ export function getNrSettings(db: Database): NrSettings {
     profileSharePrefix: sharePrefix(
       getSetting(db, SETTINGS_KEYS.profileSharePrefix),
     ),
+    defaultLanguage: getSetting(db, SETTINGS_KEYS.defaultLanguage),
     translationTargetLanguage: getSetting(
       db,
       SETTINGS_KEYS.translationTargetLanguage,
@@ -173,6 +199,18 @@ export function getNrSettings(db: Database): NrSettings {
     aiEvaluationConcurrency: aiEvaluationConcurrency(
       getSetting(db, SETTINGS_KEYS.aiEvaluationConcurrency),
     ),
+    archiveSignalReviewMode: signalReviewMode(
+      getSetting(db, SETTINGS_KEYS.archiveSignalReviewMode),
+    ),
+    likeSignalReviewMode: signalReviewMode(
+      getSetting(db, SETTINGS_KEYS.likeSignalReviewMode),
+    ),
+    replySignalReviewMode: signalReviewMode(
+      getSetting(db, SETTINGS_KEYS.replySignalReviewMode),
+    ),
+    repostQuoteSignalReviewMode: signalReviewMode(
+      getSetting(db, SETTINGS_KEYS.repostQuoteSignalReviewMode),
+    ),
   };
 }
 
@@ -183,10 +221,15 @@ type SaveNrSettingsProps = {
   instructions: string | null;
   eventSharePrefix: string;
   profileSharePrefix: string;
+  defaultLanguage: string | null;
   translationTargetLanguage: string | null;
   filterToLatestFetchedSlotOnOpen: boolean;
   relayFetchConcurrency: number;
   aiEvaluationConcurrency: number;
+  archiveSignalReviewMode: NrSignalReviewMode;
+  likeSignalReviewMode: NrSignalReviewMode;
+  replySignalReviewMode: NrSignalReviewMode;
+  repostQuoteSignalReviewMode: NrSignalReviewMode;
 };
 
 export function saveNrSettings({
@@ -196,10 +239,15 @@ export function saveNrSettings({
   instructions,
   eventSharePrefix,
   profileSharePrefix,
+  defaultLanguage,
   translationTargetLanguage,
   filterToLatestFetchedSlotOnOpen,
   relayFetchConcurrency,
   aiEvaluationConcurrency,
+  archiveSignalReviewMode,
+  likeSignalReviewMode,
+  replySignalReviewMode,
+  repostQuoteSignalReviewMode,
 }: SaveNrSettingsProps): NrSettings {
   if (backend === null) {
     deleteSetting(db, SETTINGS_KEYS.backend);
@@ -221,6 +269,12 @@ export function saveNrSettings({
 
   setSetting(db, SETTINGS_KEYS.eventSharePrefix, eventSharePrefix.trim());
   setSetting(db, SETTINGS_KEYS.profileSharePrefix, profileSharePrefix.trim());
+
+  if (defaultLanguage === null || defaultLanguage.trim().length === 0) {
+    deleteSetting(db, SETTINGS_KEYS.defaultLanguage);
+  } else {
+    setSetting(db, SETTINGS_KEYS.defaultLanguage, defaultLanguage.trim());
+  }
 
   if (
     translationTargetLanguage === null ||
@@ -253,6 +307,21 @@ export function saveNrSettings({
     String(aiEvaluationConcurrency),
   );
 
+  setSetting(
+    db,
+    SETTINGS_KEYS.archiveSignalReviewMode,
+    archiveSignalReviewMode,
+  );
+
+  setSetting(db, SETTINGS_KEYS.likeSignalReviewMode, likeSignalReviewMode);
+  setSetting(db, SETTINGS_KEYS.replySignalReviewMode, replySignalReviewMode);
+
+  setSetting(
+    db,
+    SETTINGS_KEYS.repostQuoteSignalReviewMode,
+    repostQuoteSignalReviewMode,
+  );
+
   return getNrSettings(db);
 }
 
@@ -262,12 +331,38 @@ export function resetNrSettings(db: Database): NrSettings {
   deleteSetting(db, SETTINGS_KEYS.instructions);
   deleteSetting(db, SETTINGS_KEYS.eventSharePrefix);
   deleteSetting(db, SETTINGS_KEYS.profileSharePrefix);
+  deleteSetting(db, SETTINGS_KEYS.defaultLanguage);
   deleteSetting(db, SETTINGS_KEYS.translationTargetLanguage);
   deleteSetting(db, SETTINGS_KEYS.filterToLatestFetchedSlotOnOpen);
   deleteSetting(db, SETTINGS_KEYS.relayFetchConcurrency);
   deleteSetting(db, SETTINGS_KEYS.aiEvaluationConcurrency);
+  deleteSetting(db, SETTINGS_KEYS.archiveSignalReviewMode);
+  deleteSetting(db, SETTINGS_KEYS.likeSignalReviewMode);
+  deleteSetting(db, SETTINGS_KEYS.replySignalReviewMode);
+  deleteSetting(db, SETTINGS_KEYS.repostQuoteSignalReviewMode);
 
   return getNrSettings(db);
+}
+
+type SaveNrSignalReviewModeProps = {
+  db: Database;
+  category: 'archive' | 'like' | 'reply' | 'repost_quote';
+  mode: NrSignalReviewMode;
+};
+
+export function saveNrSignalReviewMode({
+  db,
+  category,
+  mode,
+}: SaveNrSignalReviewModeProps): void {
+  const key = {
+    archive: SETTINGS_KEYS.archiveSignalReviewMode,
+    like: SETTINGS_KEYS.likeSignalReviewMode,
+    reply: SETTINGS_KEYS.replySignalReviewMode,
+    repost_quote: SETTINGS_KEYS.repostQuoteSignalReviewMode,
+  }[category];
+
+  setSetting(db, key, mode);
 }
 
 export function getNrSchedulerResource(

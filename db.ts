@@ -16,6 +16,7 @@ import {
 } from './commands/list/categories';
 import {
   calculateNrFetchCoverage,
+  calculateNrFetchCoverageBuckets,
   newestFetchedNrCoverageBucket,
 } from './commands/list/fetch-coverage';
 import type {
@@ -38,6 +39,7 @@ import type {
   NrListTimeRange,
   NrListTimeRangeSource,
   NrListTimeSelection,
+  NrUnreadFetchSlot,
   NrTagGroup,
   NrTaxonomyTerm,
   NrTaxonomyTermType,
@@ -163,6 +165,7 @@ type InterestSignalRow = {
   weight: number;
   topics_json: string;
   moods_json: string;
+  author_pubkey: string | null;
   source: string;
   created_at: number;
   updated_at: number;
@@ -180,6 +183,7 @@ type TaxonomyTermRow = {
   type: string;
   tag: string;
   description: string | null;
+  preference: string;
   active: number;
   created_at: number;
   updated_at: number;
@@ -256,8 +260,10 @@ export type MarkTaggedEventsReadResult = {
 export type SyncNrTaxonomyTermsProps = {
   db: DatabaseType;
   type: NrTaxonomyTermType;
-  activeTags: string[];
-  newTag: string | null;
+  interestedTags: string[];
+  uninterestedTags: string[];
+  newInterestedTag: string | null;
+  newUninterestedTag: string | null;
 };
 
 export type NrFollowsCache = {
@@ -271,9 +277,10 @@ export type NrFollowsCache = {
 function safeParseTags(raw: string | null): {
   topics: string[];
   moods: string[];
+  language: string;
 } {
   if (!raw) {
-    return { topics: [], moods: [] };
+    return { topics: [], moods: [], language: 'und' };
   }
 
   try {
@@ -282,9 +289,11 @@ function safeParseTags(raw: string | null): {
     return {
       topics: Array.isArray(parsed.topics) ? parsed.topics : [],
       moods: Array.isArray(parsed.moods) ? parsed.moods : [],
+      language:
+        typeof parsed.language === 'string' ? parsed.language.trim() : 'und',
     };
   } catch {
-    return { topics: [], moods: [] };
+    return { topics: [], moods: [], language: 'und' };
   }
 }
 
@@ -326,6 +335,7 @@ function rowToNrEvent(row: EventRow): NrEvent {
     classification_json: row.classification_json ?? '{}',
     topics: parsed.topics,
     moods: parsed.moods,
+    language: parsed.language || 'und',
   };
 }
 
@@ -380,6 +390,7 @@ function rowToNrTaxonomyTerm(row: TaxonomyTermRow): NrTaxonomyTerm {
     type: row.type as NrTaxonomyTermType,
     tag: row.tag,
     description: row.description,
+    preference: row.preference as NrTaxonomyTerm['preference'],
     active: row.active === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -393,6 +404,7 @@ function rowToNrInterestSignal(row: InterestSignalRow): NrInterestSignal {
     weight: row.weight,
     topics: safeParseStringArray(row.topics_json),
     moods: safeParseStringArray(row.moods_json),
+    authorPubkey: row.author_pubkey,
     source: row.source as NrInterestSignal['source'],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -469,12 +481,19 @@ export function createNrTable(db: DatabaseType): void {
       type        TEXT    NOT NULL CHECK (type IN ('topic', 'mood')),
       tag         TEXT    NOT NULL,
       description TEXT,
+      preference  TEXT    NOT NULL DEFAULT 'interested' CHECK (preference IN ('interested', 'uninterested')),
       active      INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
       created_at  INTEGER NOT NULL,
       updated_at  INTEGER NOT NULL,
       UNIQUE(type, tag)
     )
   `);
+
+  ensureNrTaxonomyTermColumn(
+    db,
+    'preference',
+    "TEXT NOT NULL DEFAULT 'interested' CHECK (preference IN ('interested', 'uninterested'))",
+  );
 
   db.run(`
     CREATE INDEX IF NOT EXISTS idx_nr_taxonomy_terms_active
@@ -652,20 +671,13 @@ export function createNrTable(db: DatabaseType): void {
       weight          INTEGER NOT NULL,
       topics_json     TEXT    NOT NULL,
       moods_json      TEXT    NOT NULL,
+      author_pubkey   TEXT,
       source          TEXT    NOT NULL CHECK (source IN ('interaction', 'archive', 'private', 'seed')),
       created_at      INTEGER NOT NULL,
       updated_at      INTEGER NOT NULL,
       PRIMARY KEY (target_event_id, type)
     )
   `);
-
-  ensureNrInterestSignalColumn(
-    db,
-    'source',
-    "TEXT NOT NULL DEFAULT 'private' CHECK (source IN ('interaction', 'archive', 'private', 'seed'))",
-  );
-
-  migrateNrInterestSignalTypes(db);
 
   db.run(`
     CREATE INDEX IF NOT EXISTS idx_nr_interest_signals_updated
@@ -686,7 +698,6 @@ export function createNrTable(db: DatabaseType): void {
     ON nr_author_preferences(updated_at DESC)
   `);
 
-  backfillNrInterestSignals(db);
   refreshNrInterestSignalWeights(db);
 }
 
@@ -722,74 +733,20 @@ function ensureNrEventColumn(
   db.run(`ALTER TABLE nr_events ADD COLUMN ${name} ${definition}`);
 }
 
-function ensureNrInterestSignalColumn(
+function ensureNrTaxonomyTermColumn(
   db: DatabaseType,
   name: string,
   definition: string,
 ): void {
   const columns = db
-    .prepare('PRAGMA table_info(nr_interest_signals)')
+    .prepare('PRAGMA table_info(nr_taxonomy_terms)')
     .all() as Array<{ name: string }>;
 
   if (columns.some((column) => column.name === name)) {
     return;
   }
 
-  db.run(`ALTER TABLE nr_interest_signals ADD COLUMN ${name} ${definition}`);
-}
-
-function migrateNrInterestSignalTypes(db: DatabaseType): void {
-  const table = db
-    .prepare(
-      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'nr_interest_signals'",
-    )
-    .get() as { sql: string } | null;
-
-  if (table?.sql.includes("'local_like'")) {
-    return;
-  }
-
-  db.transaction(() => {
-    db.run(`
-      CREATE TABLE nr_interest_signals_next (
-        target_event_id TEXT    NOT NULL,
-        type            TEXT    NOT NULL CHECK (type IN ('like', 'reply', 'repost', 'quote', 'archive', 'local_like', 'local_dislike')),
-        weight          INTEGER NOT NULL,
-        topics_json     TEXT    NOT NULL,
-        moods_json      TEXT    NOT NULL,
-        source          TEXT    NOT NULL CHECK (source IN ('interaction', 'archive', 'private', 'seed')),
-        created_at      INTEGER NOT NULL,
-        updated_at      INTEGER NOT NULL,
-        PRIMARY KEY (target_event_id, type)
-      )
-    `);
-
-    db.run(`
-      INSERT INTO nr_interest_signals_next (
-        target_event_id, type, weight, topics_json, moods_json, source, created_at, updated_at
-      )
-      SELECT
-        target_event_id,
-        CASE
-          WHEN type = 'dislike' THEN 'local_dislike'
-          WHEN type = 'like' AND source = 'private' THEN 'local_like'
-          ELSE type
-        END,
-        weight,
-        topics_json,
-        moods_json,
-        source,
-        created_at,
-        updated_at
-      FROM nr_interest_signals
-    `);
-
-    db.run('DROP TABLE nr_interest_signals');
-
-    db.run(
-      'ALTER TABLE nr_interest_signals_next RENAME TO nr_interest_signals',
-    );
-  })();
+  db.run(`ALTER TABLE nr_taxonomy_terms ADD COLUMN ${name} ${definition}`);
 }
 
 function migrateNrListFilterModes(db: DatabaseType): void {
@@ -1185,6 +1142,16 @@ const NR_INTEREST_WEIGHTS: Record<NrInterestSignalType, number> = {
 
 const NR_EVALUATION_QUEUE_COMPLETED_LIMIT = 10_000;
 
+function normalizeSignalAuthorPubkey(pubkey: unknown): string | null {
+  if (typeof pubkey !== 'string') {
+    return null;
+  }
+
+  const normalized = pubkey.trim().toLowerCase();
+
+  return /^[0-9a-f]{64}$/.test(normalized) ? normalized : null;
+}
+
 function interestTags({
   db,
   targetEventId,
@@ -1214,39 +1181,37 @@ function interestTags({
   return rows.map((row) => row.tag);
 }
 
-export function recordNrInterestSignal({
-  db,
-  targetEventId,
-  type,
-  createdAt,
-  topics: providedTopics,
-  moods: providedMoods,
-  source,
-}: {
+type RecordReviewedNrInterestSignalProps = {
   db: DatabaseType;
   targetEventId: string;
   type: NrInterestSignalType;
   createdAt: number;
-  topics: string[] | null;
-  moods: string[] | null;
+  topics: string[];
+  authorPubkey: string | null;
   source: NrInterestSignal['source'];
-}): NrInterestSignal {
+};
+
+export function recordReviewedNrInterestSignal({
+  db,
+  targetEventId,
+  type,
+  createdAt,
+  topics,
+  authorPubkey,
+  source,
+}: RecordReviewedNrInterestSignalProps): NrInterestSignal {
   const now = Date.now();
-
-  const topics =
-    providedTopics ?? interestTags({ db, targetEventId, type: 'topic' });
-
-  const moods =
-    providedMoods ?? interestTags({ db, targetEventId, type: 'mood' });
+  const normalizedAuthorPubkey = normalizeSignalAuthorPubkey(authorPubkey);
 
   db.run(
     `INSERT INTO nr_interest_signals (
-       target_event_id, type, weight, topics_json, moods_json, source, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       target_event_id, type, weight, topics_json, moods_json, author_pubkey, source, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(target_event_id, type) DO UPDATE SET
        weight = excluded.weight,
        topics_json = excluded.topics_json,
        moods_json = excluded.moods_json,
+       author_pubkey = excluded.author_pubkey,
        source = excluded.source,
        updated_at = excluded.updated_at`,
     [
@@ -1254,7 +1219,8 @@ export function recordNrInterestSignal({
       type,
       NR_INTEREST_WEIGHTS[type],
       JSON.stringify(topics),
-      JSON.stringify(moods),
+      JSON.stringify([]),
+      normalizedAuthorPubkey,
       source,
       createdAt,
       now,
@@ -1272,6 +1238,122 @@ export function recordNrInterestSignal({
   }
 
   return rowToNrInterestSignal(row);
+}
+
+export function removeNrInterestSignal({
+  db,
+  targetEventId,
+  type,
+}: {
+  db: DatabaseType;
+  targetEventId: string;
+  type: NrInterestSignalType;
+}): void {
+  db.run(
+    'DELETE FROM nr_interest_signals WHERE target_event_id = ? AND type = ?',
+    [targetEventId, type],
+  );
+}
+
+export function getNrSignalReviewTarget({
+  db,
+  targetEventId,
+}: {
+  db: DatabaseType;
+  targetEventId: string;
+}): {
+  id: string;
+  pubkey: string;
+  kind: number;
+  relayHints: string[];
+} | null {
+  const row = db
+    .prepare(
+      'SELECT id, pubkey, kind, relay_hints_json FROM nr_events WHERE id = ?',
+    )
+    .get(targetEventId) as {
+    id: string;
+    pubkey: string;
+    kind: number;
+    relay_hints_json: string | null;
+  } | null;
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    pubkey: row.pubkey,
+    kind: row.kind,
+    relayHints: safeParseStringArray(row.relay_hints_json),
+  };
+}
+
+export function getNrSignalReviewTargetAuthor({
+  db,
+  targetEventId,
+}: {
+  db: DatabaseType;
+  targetEventId: string;
+}): string | null {
+  return normalizeSignalAuthorPubkey(
+    getNrSignalReviewTarget({ db, targetEventId })?.pubkey ?? null,
+  );
+}
+
+export function listNrDirectSignalReviewTopics({
+  db,
+  targetEventId,
+}: {
+  db: DatabaseType;
+  targetEventId: string;
+}): string[] {
+  const rows = db
+    .prepare(
+      `SELECT tag
+       FROM nr_event_tags
+       WHERE event_id = ? AND type = 'topic'
+       ORDER BY tag COLLATE NOCASE ASC`,
+    )
+    .all(targetEventId) as Array<{ tag: string }>;
+
+  return scoringTopics(rows.map((row) => row.tag));
+}
+
+export function recordNrInterestSignal({
+  db,
+  targetEventId,
+  type,
+  createdAt,
+  topics: providedTopics,
+  moods: providedMoods,
+  source,
+}: {
+  db: DatabaseType;
+  targetEventId: string;
+  type: NrInterestSignalType;
+  createdAt: number;
+  topics: string[] | null;
+  moods: string[] | null;
+  source: NrInterestSignal['source'];
+}): NrInterestSignal {
+  const topics =
+    providedTopics ?? interestTags({ db, targetEventId, type: 'topic' });
+
+  if (providedMoods === null) {
+    void interestTags({ db, targetEventId, type: 'mood' });
+  }
+
+  return recordReviewedNrInterestSignal({
+    db,
+    targetEventId,
+    type,
+    createdAt,
+    topics,
+    authorPubkey: null,
+    source,
+  });
 }
 
 export function listNrInterestSignals(db: DatabaseType): NrInterestSignal[] {
@@ -1404,63 +1486,6 @@ export function getNrAuthorPreference({
   return row ? rowToNrAuthorPreference(row) : null;
 }
 
-function backfillNrInterestSignals(db: DatabaseType): void {
-  const interactionTypes: Record<NrInteractionType, NrInterestSignalType> = {
-    liked: 'like',
-    replied: 'reply',
-    reposted: 'repost',
-    quoted: 'quote',
-  };
-
-  const interactions = db
-    .prepare(
-      `SELECT target_event_id, type, interaction_created_at
-       FROM nr_interactions
-       ORDER BY interaction_created_at ASC`,
-    )
-    .all() as Array<{
-    target_event_id: string;
-    type: NrInteractionType;
-    interaction_created_at: number;
-  }>;
-
-  for (const interaction of interactions) {
-    recordNrInterestSignal({
-      db,
-      targetEventId: interaction.target_event_id,
-      type: interactionTypes[interaction.type],
-      createdAt: interaction.interaction_created_at * 1000,
-      topics: null,
-      moods: null,
-      source: 'interaction',
-    });
-  }
-
-  const archivedTargets = db
-    .prepare(
-      `SELECT DISTINCT
-         COALESCE(activity.target_event_id, event.id) AS target_event_id,
-         event.archived_at
-       FROM nr_events event
-       LEFT JOIN nr_activity_targets activity
-         ON activity.activity_event_id = event.id
-       WHERE event.archived_at IS NOT NULL`,
-    )
-    .all() as Array<{ target_event_id: string; archived_at: number }>;
-
-  for (const archived of archivedTargets) {
-    recordNrInterestSignal({
-      db,
-      targetEventId: archived.target_event_id,
-      type: 'archive',
-      createdAt: archived.archived_at,
-      topics: null,
-      moods: null,
-      source: 'archive',
-    });
-  }
-}
-
 export function listNrTaxonomyTerms(db: DatabaseType): NrTaxonomyTerm[] {
   const rows = db
     .prepare(
@@ -1499,19 +1524,45 @@ export function listActiveNrTaxonomyTerms({
 export function syncNrTaxonomyTerms({
   db,
   type,
-  activeTags,
-  newTag,
+  interestedTags,
+  uninterestedTags,
+  newInterestedTag,
+  newUninterestedTag,
 }: SyncNrTaxonomyTermsProps): NrTaxonomyTerm[] {
   const now = Date.now();
 
-  const desiredTags = new Set(
-    activeTags.map(normalizeTaxonomyTag).filter((tag) => tag.length > 0),
-  );
+  const desiredTerms = new Map<string, NrTaxonomyTerm['preference']>();
 
-  const normalizedNewTag = newTag ? normalizeTaxonomyTag(newTag) : '';
+  for (const tag of interestedTags) {
+    const normalized = normalizeTaxonomyTag(tag);
 
-  if (normalizedNewTag.length > 0) {
-    desiredTags.add(normalizedNewTag);
+    if (normalized) {
+      desiredTerms.set(normalized, 'interested');
+    }
+  }
+
+  const normalizedNewInterestedTag = newInterestedTag
+    ? normalizeTaxonomyTag(newInterestedTag)
+    : '';
+
+  if (normalizedNewInterestedTag) {
+    desiredTerms.set(normalizedNewInterestedTag, 'interested');
+  }
+
+  for (const tag of uninterestedTags) {
+    const normalized = normalizeTaxonomyTag(tag);
+
+    if (normalized) {
+      desiredTerms.set(normalized, 'uninterested');
+    }
+  }
+
+  const normalizedNewUninterestedTag = newUninterestedTag
+    ? normalizeTaxonomyTag(newUninterestedTag)
+    : '';
+
+  if (normalizedNewUninterestedTag) {
+    desiredTerms.set(normalizedNewUninterestedTag, 'uninterested');
   }
 
   db.run(
@@ -1525,18 +1576,20 @@ export function syncNrTaxonomyTerms({
       type,
       tag,
       description,
+      preference,
       active,
       created_at,
       updated_at
-    ) VALUES (?, ?, NULL, 1, ?, ?)
+    ) VALUES (?, ?, NULL, ?, 1, ?, ?)
     ON CONFLICT(type, tag) DO UPDATE SET
+      preference = excluded.preference,
       active = 1,
       updated_at = excluded.updated_at
   `,
   );
 
-  for (const tag of desiredTags) {
-    upsert.run(type, tag, now, now);
+  for (const [tag, preference] of desiredTerms) {
+    upsert.run(type, tag, preference, now, now);
   }
 
   return listActiveNrTaxonomyTerms({ db, type });
@@ -1813,8 +1866,7 @@ export function saveNrFetchRelayCursor({
     `,
     )
     .get(since, until, scope, relay, authorsHash) as
-    | FetchRelayCursorRow
-    | undefined;
+    FetchRelayCursorRow | undefined;
 
   if (!row) {
     throw new Error('Failed to save fetch relay cursor.');
@@ -2002,7 +2054,7 @@ export async function parseAndStoreEvent({
     ],
   );
 
-  if (event.kind !== 1) {
+  if (event.kind !== 1 && event.kind !== 30023) {
     const targetIds = [
       ...new Set(
         [...threadContext, ...referencedEvents].map((item) => item.id),
@@ -2754,7 +2806,7 @@ function resolveListTimeSelection({
   }
 
   const newestFetchedBucket = newestFetchedNrCoverageBucket(
-    calculateNrFetchCoverage({ fetchWindows, nowSeconds }),
+    calculateNrFetchCoverage({ fetchWindows, nowSeconds, hours: 24 }),
   );
 
   return newestFetchedBucket
@@ -2768,6 +2820,138 @@ function resolveListTimeSelection({
         source: 'latest-fetched-slot',
       }
     : { ranges: [], source: 'none' };
+}
+
+const NR_FETCH_SLOT_SECONDS = 60 * 60;
+
+type UnreadTimelineCandidateRow = EventRow & {
+  has_tag: number;
+  target_read: number;
+};
+
+function listUnreadFetchSlots(
+  db: DatabaseType,
+  categories: NrFeedCategory[],
+): NrUnreadFetchSlot[] {
+  const fetchWindows = (
+    db
+      .prepare(
+        `SELECT *
+         FROM nr_fetch_windows
+         WHERE scope = 'follows'
+         ORDER BY since DESC, until DESC`,
+      )
+      .all() as FetchWindowRow[]
+  ).map(rowToNrFetchWindow);
+
+  if (fetchWindows.length === 0) {
+    return [];
+  }
+
+  const latestUntil = Math.max(...fetchWindows.map((window) => window.until));
+  const latestCoveredSecond = Math.max(0, latestUntil - 1);
+
+  const candidateRows = db
+    .prepare(
+      `SELECT
+         e.*,
+         c.summary,
+         c.model,
+         c.classified_at,
+         c.classification_json,
+         EXISTS(
+           SELECT 1 FROM nr_event_tags tag WHERE tag.event_id = e.id
+         ) AS has_tag,
+         EXISTS(
+           SELECT 1
+           FROM nr_activity_targets activity_target
+           JOIN nr_events target ON target.id = activity_target.target_event_id
+           WHERE activity_target.activity_event_id = e.id
+             AND target.read_at IS NOT NULL
+         ) AS target_read
+       FROM nr_events e
+       LEFT JOIN nr_classifications c ON c.event_id = e.id
+       WHERE e.read_at IS NULL
+       ORDER BY e.event_created_at DESC`,
+    )
+    .all() as UnreadTimelineCandidateRow[];
+
+  const candidates = candidateRows.map((row) => ({
+    row,
+    event: rowToNrEvent(row),
+    since:
+      Math.floor(row.event_created_at / NR_FETCH_SLOT_SECONDS) *
+      NR_FETCH_SLOT_SECONDS,
+  }));
+
+  const hiddenIdsByHour = new Map<number, Set<string>>();
+
+  for (const candidate of candidates) {
+    const hiddenIds = hiddenIdsByHour.get(candidate.since) ?? new Set<string>();
+
+    for (const id of [
+      ...relatedEventIds(candidate.event.thread_context_json),
+      ...relatedEventIds(candidate.event.referenced_events_json),
+    ]) {
+      hiddenIds.add(id);
+    }
+
+    hiddenIdsByHour.set(candidate.since, hiddenIds);
+  }
+
+  const unreadByHour = new Map<number, number>();
+
+  for (const candidate of candidates) {
+    let category: NrFeedCategory | null;
+
+    try {
+      category = categoryForNrEvent(
+        JSON.parse(candidate.event.raw_json) as NostrEvent,
+      );
+    } catch {
+      category = null;
+    }
+
+    if (!category || !categories.includes(category)) {
+      continue;
+    }
+
+    const visible =
+      candidate.event.kind === 1
+        ? candidate.row.has_tag === 1 &&
+          candidate.row.target_read === 0 &&
+          !hiddenIdsByHour.get(candidate.since)?.has(candidate.event.id) &&
+          eventHasCompleteContext(candidate.event)
+        : candidate.row.target_read === 0;
+
+    if (visible) {
+      unreadByHour.set(
+        candidate.since,
+        (unreadByHour.get(candidate.since) ?? 0) + 1,
+      );
+    }
+  }
+
+  return calculateNrFetchCoverageBuckets({
+    fetchWindows,
+    nowSeconds: latestCoveredSecond,
+    bucketStarts: [...unreadByHour.keys()].sort((left, right) => right - left),
+  })
+    .filter(
+      (
+        bucket,
+      ): bucket is typeof bucket & {
+        status: NrUnreadFetchSlot['status'];
+      } =>
+        (bucket.status === 'fetched' || bucket.status === 'partial') &&
+        (unreadByHour.get(bucket.since) ?? 0) > 0,
+    )
+    .map((bucket) => ({
+      since: bucket.since,
+      until: bucket.until,
+      status: bucket.status,
+      unreadCount: unreadByHour.get(bucket.since) ?? 0,
+    }));
 }
 
 function scoringTopics(topics: string[]): string[] {
@@ -2807,34 +2991,68 @@ const NR_AUTHOR_PREFERENCE_WEIGHTS: Record<NrAuthorPreferenceValue, number> = {
   dislike: -6,
 };
 
-export function buildNrAuthorAffinities(
+export function buildNrLearnedAuthorAffinities(
+  signals: NrInterestSignal[],
+): Map<string, number> {
+  const rawAffinities = new Map<string, number>();
+
+  for (const signal of signals) {
+    const normalizedPubkey = normalizeSignalAuthorPubkey(signal.authorPubkey);
+
+    if (normalizedPubkey === null) {
+      continue;
+    }
+
+    rawAffinities.set(
+      normalizedPubkey,
+      (rawAffinities.get(normalizedPubkey) ?? 0) + signal.weight,
+    );
+  }
+
+  return new Map(
+    [...rawAffinities].map(([pubkey, raw]) => [
+      pubkey,
+      1.5 * Math.tanh(raw / 5),
+    ]),
+  );
+}
+
+export function buildNrExplicitAuthorBiases(
   preferences: NrAuthorPreference[],
 ): Map<string, number> {
-  const affinities = new Map<string, number>();
+  const biases = new Map<string, number>();
 
   for (const preference of preferences) {
-    affinities.set(
+    biases.set(
       preference.pubkey.toLowerCase(),
       NR_AUTHOR_PREFERENCE_WEIGHTS[preference.preference],
     );
   }
 
-  return affinities;
+  return biases;
 }
+
+export const buildNrAuthorAffinities = buildNrExplicitAuthorBiases;
 
 type ScoreNrEventForYouProps = {
   event: NrEvent;
   topicAffinities: ReadonlyMap<string, number>;
-  authorAffinities: ReadonlyMap<string, number>;
+  learnedAuthorAffinities: ReadonlyMap<string, number>;
+  explicitAuthorBiases: ReadonlyMap<string, number>;
 };
 
 export function scoreNrEventForYou({
   event,
   topicAffinities,
-  authorAffinities,
+  learnedAuthorAffinities,
+  explicitAuthorBiases,
 }: ScoreNrEventForYouProps): number {
   const topics = scoringTopics(event.topics);
-  const authorScore = authorAffinities.get(event.pubkey.toLowerCase()) ?? 0;
+  const normalizedPubkey = event.pubkey.toLowerCase();
+
+  const authorScore =
+    (learnedAuthorAffinities.get(normalizedPubkey) ?? 0) +
+    (explicitAuthorBiases.get(normalizedPubkey) ?? 0);
 
   if (topics.length === 0) {
     return authorScore;
@@ -2920,6 +3138,39 @@ export function getNrListData({
           timeRanges: queryTimeRanges,
         });
 
+  const defaultLanguage = (settings.defaultLanguage ?? 'en').toLowerCase();
+
+  const languageEvents = [
+    ...new Map(
+      [...topicGroups, ...moodGroups]
+        .flatMap((group) => group.events)
+        .map((event) => [event.id, event]),
+    ).values(),
+  ];
+
+  const languageGroups = [
+    ...new Set(languageEvents.map((event) => event.language)),
+  ]
+    .filter(
+      (language) =>
+        language.length > 0 &&
+        language.toLowerCase() !== defaultLanguage &&
+        language.toLowerCase() !== 'und',
+    )
+    .sort((left, right) => left.localeCompare(right))
+    .map((language) => {
+      const events = languageEvents.filter(
+        (event) => event.language === language,
+      );
+
+      return {
+        type: 'language' as const,
+        tag: language,
+        unreadCount: events.length,
+        events,
+      };
+    });
+
   const activityTargetPredicate =
     mode === 'archive'
       ? ''
@@ -2942,7 +3193,7 @@ export function getNrListData({
               `SELECT e.*, c.summary, c.model, c.classified_at, c.classification_json
          FROM nr_events e
          LEFT JOIN nr_classifications c ON c.event_id = e.id
-         WHERE e.kind != 1 AND ${listModePredicate(mode)} ${activityTimePredicate.sql} ${activityTargetPredicate}
+          WHERE e.kind NOT IN (1, 30023) AND ${listModePredicate(mode)} ${activityTimePredicate.sql} ${activityTargetPredicate}
          ORDER BY e.event_created_at DESC`,
             )
             .all(...activityTimePredicate.params) as EventRow[]
@@ -2964,6 +3215,7 @@ export function getNrListData({
     [
       ...topicGroups.flatMap((group) => group.events),
       ...moodGroups.flatMap((group) => group.events),
+      ...languageGroups.flatMap((group) => group.events),
       ...activityEvents,
     ].map((event) => event.id),
   );
@@ -2971,7 +3223,11 @@ export function getNrListData({
   const interestSignals = listNrInterestSignals(db);
   const authorPreferences = listNrAuthorPreferences(db);
   const topicAffinities = buildNrTopicAffinities(interestSignals);
-  const authorAffinities = buildNrAuthorAffinities(authorPreferences);
+
+  const learnedAuthorAffinities =
+    buildNrLearnedAuthorAffinities(interestSignals);
+
+  const explicitAuthorBiases = buildNrExplicitAuthorBiases(authorPreferences);
 
   const rankedForYouEvents =
     mode === 'for-you'
@@ -2985,7 +3241,8 @@ export function getNrListData({
             score: scoreNrEventForYou({
               event,
               topicAffinities,
-              authorAffinities,
+              learnedAuthorAffinities,
+              explicitAuthorBiases,
             }),
           }))
           .filter(({ score }) => score >= 0)
@@ -3007,7 +3264,7 @@ export function getNrListData({
           ...new Map(
             [...topicGroups, ...moodGroups]
               .flatMap((group) => group.events)
-              .filter((event) => event.kind === 1)
+              .filter((event) => event.kind === 1 || event.kind === 30023)
               .map((event) => [event.id, event]),
           ).values(),
         ].map((event) => ({
@@ -3015,7 +3272,8 @@ export function getNrListData({
           score: scoreNrEventForYou({
             event,
             topicAffinities,
-            authorAffinities,
+            learnedAuthorAffinities,
+            explicitAuthorBiases,
           }),
         }));
 
@@ -3036,10 +3294,12 @@ export function getNrListData({
     activityEvents,
     topicGroups,
     moodGroups,
+    languageGroups,
     unreadTotal:
       mode === 'for-you' ? forYouEvents.length : visibleUnreadEventIds.size,
     fetchCoverageNowSeconds: nowSeconds,
     fetchWindows,
+    unreadFetchSlots: listUnreadFetchSlots(db, selectedCategories),
     interactions: listNrInteractions(db),
     interestSignals,
     authorPreferences,

@@ -35,4 +35,5 @@ export type NrCommandAdapterParams = {
   runAgent: RunAgentFn | null;
   sendReply: SendReplyFn | null;
   storedCtx: NrRuntimeContext;
+  jsonPayload: unknown;
 };
