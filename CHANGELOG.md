@@ -4,9 +4,13 @@ All notable changes for each version are listed under the corresponding `v*.*.*`
 Tags and this file are updated by the post-commit hook when you commit with `--patch`, `--minor`, or `--major` (see CONTRIBUTING.md).
 You can also run `bun run release:changelog` to rewrite this file from tags.
 
+## [v2.0.1] - 2026-08-18
+
+- chore: need to bump version to republish (096c01c)
+
 ## [v2.0.0] - 2026-08-15
 
-- feat: add reviewed signals and richer radar feeds (4a49ce8)
+- feat: add reviewed signals and richer radar feeds (102c06f)
 
 ## [v1.2.0] - 2026-08-02
 
