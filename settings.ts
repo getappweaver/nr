@@ -18,6 +18,7 @@ export type NrSettings = {
   defaultLanguage: string | null;
   translationTargetLanguage: string | null;
   filterToLatestFetchedSlotOnOpen: boolean;
+  alwaysResolveUnresolvedReferences: boolean;
   relayFetchConcurrency: number;
   aiEvaluationConcurrency: number;
   archiveSignalReviewMode: NrSignalReviewMode;
@@ -30,6 +31,7 @@ export const DEFAULT_NR_SHARE_PREFIX = 'nostr://';
 export const DEFAULT_NR_RELAY_FETCH_CONCURRENCY = 3;
 export const DEFAULT_NR_AI_EVALUATION_CONCURRENCY = 2;
 export const DEFAULT_NR_FILTER_TO_LATEST_FETCHED_SLOT_ON_OPEN = true;
+export const DEFAULT_NR_ALWAYS_RESOLVE_UNRESOLVED_REFERENCES = false;
 export const DEFAULT_NR_SIGNAL_REVIEW_MODE: NrSignalReviewMode = 'ask';
 
 export const DEFAULT_NR_CLASSIFICATION_INSTRUCTIONS = `Classify this Nostr event for a personal unread radar.
@@ -78,6 +80,7 @@ const SETTINGS_KEYS = {
   defaultLanguage: 'default_language',
   translationTargetLanguage: 'translation_target_language',
   filterToLatestFetchedSlotOnOpen: 'filter_to_latest_fetched_slot_on_open',
+  alwaysResolveUnresolvedReferences: 'always_resolve_unresolved_references',
   relayFetchConcurrency: 'relay_fetch_concurrency',
   aiEvaluationConcurrency: 'ai_evaluation_concurrency',
   archiveSignalReviewMode: 'archive_signal_review_mode',
@@ -193,6 +196,10 @@ export function getNrSettings(db: Database): NrSettings {
       getSetting(db, SETTINGS_KEYS.filterToLatestFetchedSlotOnOpen),
       DEFAULT_NR_FILTER_TO_LATEST_FETCHED_SLOT_ON_OPEN,
     ),
+    alwaysResolveUnresolvedReferences: booleanSetting(
+      getSetting(db, SETTINGS_KEYS.alwaysResolveUnresolvedReferences),
+      DEFAULT_NR_ALWAYS_RESOLVE_UNRESOLVED_REFERENCES,
+    ),
     relayFetchConcurrency: relayFetchConcurrency(
       getSetting(db, SETTINGS_KEYS.relayFetchConcurrency),
     ),
@@ -224,6 +231,7 @@ type SaveNrSettingsProps = {
   defaultLanguage: string | null;
   translationTargetLanguage: string | null;
   filterToLatestFetchedSlotOnOpen: boolean;
+  alwaysResolveUnresolvedReferences: boolean;
   relayFetchConcurrency: number;
   aiEvaluationConcurrency: number;
   archiveSignalReviewMode: NrSignalReviewMode;
@@ -242,6 +250,7 @@ export function saveNrSettings({
   defaultLanguage,
   translationTargetLanguage,
   filterToLatestFetchedSlotOnOpen,
+  alwaysResolveUnresolvedReferences,
   relayFetchConcurrency,
   aiEvaluationConcurrency,
   archiveSignalReviewMode,
@@ -297,6 +306,12 @@ export function saveNrSettings({
 
   setSetting(
     db,
+    SETTINGS_KEYS.alwaysResolveUnresolvedReferences,
+    String(alwaysResolveUnresolvedReferences),
+  );
+
+  setSetting(
+    db,
     SETTINGS_KEYS.relayFetchConcurrency,
     String(relayFetchConcurrency),
   );
@@ -334,6 +349,7 @@ export function resetNrSettings(db: Database): NrSettings {
   deleteSetting(db, SETTINGS_KEYS.defaultLanguage);
   deleteSetting(db, SETTINGS_KEYS.translationTargetLanguage);
   deleteSetting(db, SETTINGS_KEYS.filterToLatestFetchedSlotOnOpen);
+  deleteSetting(db, SETTINGS_KEYS.alwaysResolveUnresolvedReferences);
   deleteSetting(db, SETTINGS_KEYS.relayFetchConcurrency);
   deleteSetting(db, SETTINGS_KEYS.aiEvaluationConcurrency);
   deleteSetting(db, SETTINGS_KEYS.archiveSignalReviewMode);

@@ -1753,6 +1753,7 @@ function threadContextReferences({
       sharePrefixes,
       createdAt: contextEvent.created_at,
       content: contextEvent.content,
+      source: eventSource(contextEvent),
       readAction: markRawEventAction({
         alias,
         event: contextEvent,
@@ -1880,6 +1881,47 @@ function signalReviewAuthorLabel(
   );
 }
 
+function eventSource(event: NostrEvent): string | undefined {
+  const source = event.tags.find((tag) => tag[0] === 'r')?.[1]?.trim();
+
+  if (source) {
+    return source;
+  }
+
+  const address = event.tags.find((tag) => tag[0] === 'a');
+  const [kindText, pubkey, identifier] = address?.[1]?.split(':') ?? [];
+  const kind = Number.parseInt(kindText ?? '', 10);
+
+  if (Number.isSafeInteger(kind) && pubkey && identifier !== undefined) {
+    try {
+      return `nostr:${nip19.naddrEncode({
+        kind,
+        pubkey,
+        identifier,
+        relays: address?.[2] ? [address[2]] : [],
+      })}`;
+    } catch {
+      // Fall through to an exact event source.
+    }
+  }
+
+  const eventTag = event.tags.find((tag) => tag[0] === 'e');
+
+  if (!eventTag?.[1]) {
+    return undefined;
+  }
+
+  try {
+    return `nostr:${nip19.neventEncode({
+      id: eventTag[1],
+      relays: eventTag[2] ? [eventTag[2]] : [],
+      author: event.tags.find((tag) => tag[0] === 'p')?.[1],
+    })}`;
+  } catch {
+    return undefined;
+  }
+}
+
 function postViewFromNrEvent({
   event,
   profiles,
@@ -1918,6 +1960,7 @@ type EventNodeProps = {
   likeSignalReviewMode?: NrSignalReviewMode;
   replySignalReviewMode?: NrSignalReviewMode;
   repostQuoteSignalReviewMode?: NrSignalReviewMode;
+  resolveReferencesAutomatically: boolean;
   mode: NrListMode;
   renderScope: string;
 };
@@ -1937,10 +1980,11 @@ export function eventNode({
   likeSignalReviewMode = 'ask',
   replySignalReviewMode = 'ask',
   repostQuoteSignalReviewMode = 'ask',
+  resolveReferencesAutomatically,
   mode,
   renderScope,
 }: EventNodeProps): WebNode {
-  if (event.kind !== 1 && event.kind !== 30023) {
+  if (isActivityEvent(event)) {
     return activityEventNode({
       alias,
       event,
@@ -2005,7 +2049,11 @@ export function eventNode({
               nostrAuthorPicture: post.authorPicture ?? undefined,
               nostrAuthorAbout: post.authorAbout ?? undefined,
               nostrCreatedAt: post.createdAt,
+              nostrKind: event.kind,
               nostrContent: post.content,
+              nostrSource: eventSource(
+                JSON.parse(event.raw_json) as NostrEvent,
+              ),
               nostrInlineProfiles: inlineProfiles({
                 alias,
                 content: event.content,
@@ -2070,6 +2118,8 @@ export function eventNode({
                 pubkey: event.pubkey,
                 mode,
               }),
+              nostrProfileResolveReferencesAutomatically:
+                resolveReferencesAutomatically,
               nostrArchiveAction: archiveAction({
                 alias,
                 event,
@@ -2123,6 +2173,7 @@ type GroupNodeProps = {
   likeSignalReviewMode: NrSignalReviewMode;
   replySignalReviewMode: NrSignalReviewMode;
   repostQuoteSignalReviewMode: NrSignalReviewMode;
+  resolveReferencesAutomatically: boolean;
   mode: NrListMode;
   selectedTimeRanges: NrListTimeRange[];
 };
@@ -2145,6 +2196,10 @@ function activityTarget(event: NrEvent): NostrEvent | null {
   }
 
   return null;
+}
+
+function isActivityEvent(event: Pick<NostrEvent, 'kind'>): boolean {
+  return event.kind === 6 || event.kind === 7 || event.kind === 16;
 }
 
 function mergedActivityNode({
@@ -2251,7 +2306,7 @@ function mergedActivityNode({
       const event = JSON.parse(activity.raw_json) as NostrEvent;
 
       const label =
-        event.kind === 6
+        event.kind === 6 || event.kind === 16
           ? 'Reposted'
           : event.kind === 7
             ? `Reacted ${event.content || '+'}`
@@ -2333,6 +2388,7 @@ function groupEventNodes({
   likeSignalReviewMode,
   replySignalReviewMode,
   repostQuoteSignalReviewMode,
+  resolveReferencesAutomatically,
   mode,
   renderScope,
 }: {
@@ -2349,6 +2405,7 @@ function groupEventNodes({
   likeSignalReviewMode: NrSignalReviewMode;
   replySignalReviewMode: NrSignalReviewMode;
   repostQuoteSignalReviewMode: NrSignalReviewMode;
+  resolveReferencesAutomatically: boolean;
   mode: NrListMode;
   renderScope: string;
 }): WebNode[] {
@@ -2360,7 +2417,7 @@ function groupEventNodes({
   >();
 
   for (const event of events) {
-    if (event.kind === 1 || event.kind === 30023) {
+    if (!isActivityEvent(event)) {
       continue;
     }
 
@@ -2383,7 +2440,7 @@ function groupEventNodes({
   const nodes: WebNode[] = [];
 
   for (const event of events) {
-    if (event.kind !== 1 && event.kind !== 30023) {
+    if (isActivityEvent(event)) {
       const target = activityTarget(event);
 
       if (!target || renderedTargets.has(target.id)) {
@@ -2465,6 +2522,7 @@ function groupEventNodes({
           likeSignalReviewMode,
           replySignalReviewMode,
           repostQuoteSignalReviewMode,
+          resolveReferencesAutomatically,
           mode,
           renderScope,
         }),
@@ -2489,6 +2547,7 @@ function groupNode({
   likeSignalReviewMode,
   replySignalReviewMode,
   repostQuoteSignalReviewMode,
+  resolveReferencesAutomatically,
   mode,
   selectedTimeRanges,
 }: GroupNodeProps): WebNode {
@@ -2618,6 +2677,7 @@ function groupNode({
       likeSignalReviewMode,
       replySignalReviewMode,
       repostQuoteSignalReviewMode,
+      resolveReferencesAutomatically,
       mode,
       renderScope: `${group.type}:${encodeURIComponent(group.tag)}`,
     }),
@@ -2640,6 +2700,7 @@ type SectionNodeProps = {
   likeSignalReviewMode: NrSignalReviewMode;
   replySignalReviewMode: NrSignalReviewMode;
   repostQuoteSignalReviewMode: NrSignalReviewMode;
+  resolveReferencesAutomatically: boolean;
   mode: NrListMode;
   selectedTimeRanges: NrListTimeRange[];
 };
@@ -2660,6 +2721,7 @@ function sectionNode({
   likeSignalReviewMode,
   replySignalReviewMode,
   repostQuoteSignalReviewMode,
+  resolveReferencesAutomatically,
   mode,
   selectedTimeRanges,
 }: SectionNodeProps): WebNode {
@@ -2728,6 +2790,7 @@ function sectionNode({
               likeSignalReviewMode,
               replySignalReviewMode,
               repostQuoteSignalReviewMode,
+              resolveReferencesAutomatically,
               mode,
               selectedTimeRanges,
             }),
@@ -3019,7 +3082,9 @@ function profilePostNode({
         nostrAuthorAbout: profile?.about,
         ...(sharePrefixes ? { nostrSharePrefixes: sharePrefixes } : {}),
         nostrCreatedAt: event.created_at,
+        nostrKind: event.kind,
         nostrContent: event.content,
+        nostrSource: eventSource(event),
         nostrExtraActions: [
           translationPostAction({
             alias,
@@ -3184,6 +3249,20 @@ function profileReference({
     sharePrefixes,
     createdAt: event.created_at,
     content: event.content,
+    source: eventSource(event),
+    readAction: markRawEventAction({
+      alias,
+      event,
+      state: 'read',
+      mode,
+    }),
+    archiveAction: markRawEventAction({
+      alias,
+      event,
+      state: 'archived',
+      mode,
+    }),
+    archived: false,
     likeAction: likeNostrEventAction({
       alias,
       event,
@@ -3357,7 +3436,7 @@ function profileEventNode({
         : null;
 
   const replyContext =
-    category === 'replies' || reposted !== null
+    category === 'replies' || category === 'comments' || reposted !== null
       ? threadEventReferences(displayEvent).map((reference) => {
           const contextEvent = referencedEventsById.get(reference.id);
 
@@ -3682,6 +3761,8 @@ export function renderNrListWeb({
                       listData.settings.replySignalReviewMode,
                     repostQuoteSignalReviewMode:
                       listData.settings.repostQuoteSignalReviewMode,
+                    resolveReferencesAutomatically:
+                      listData.settings.alwaysResolveUnresolvedReferences,
                     mode: 'for-you',
                     renderScope: 'for-you',
                   }),
@@ -3734,6 +3815,8 @@ export function renderNrListWeb({
                       listData.settings.replySignalReviewMode,
                     repostQuoteSignalReviewMode:
                       listData.settings.repostQuoteSignalReviewMode,
+                    resolveReferencesAutomatically:
+                      listData.settings.alwaysResolveUnresolvedReferences,
                     mode: listData.mode,
                     selectedTimeRanges: listData.selectedTimeRanges,
                   }),
@@ -3757,6 +3840,8 @@ export function renderNrListWeb({
                       listData.settings.replySignalReviewMode,
                     repostQuoteSignalReviewMode:
                       listData.settings.repostQuoteSignalReviewMode,
+                    resolveReferencesAutomatically:
+                      listData.settings.alwaysResolveUnresolvedReferences,
                     mode: listData.mode,
                     selectedTimeRanges: listData.selectedTimeRanges,
                   }),
@@ -3780,6 +3865,8 @@ export function renderNrListWeb({
                       listData.settings.replySignalReviewMode,
                     repostQuoteSignalReviewMode:
                       listData.settings.repostQuoteSignalReviewMode,
+                    resolveReferencesAutomatically:
+                      listData.settings.alwaysResolveUnresolvedReferences,
                     mode: listData.mode,
                     selectedTimeRanges: listData.selectedTimeRanges,
                   }),

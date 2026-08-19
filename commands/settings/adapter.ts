@@ -158,6 +158,9 @@ function formatSettings(settings: ReturnType<typeof getNrSettings>): string {
     `Filter to latest fetched hour on open: ${
       settings.filterToLatestFetchedSlotOnOpen ? 'enabled' : 'disabled'
     }`,
+    `Always resolve unresolved references: ${
+      settings.alwaysResolveUnresolvedReferences ? 'enabled' : 'disabled'
+    }`,
     `Relay fetch concurrency: ${settings.relayFetchConcurrency}`,
     `AI evaluation concurrency: ${settings.aiEvaluationConcurrency}`,
     '',
@@ -287,6 +290,7 @@ function renderSettingsWeb({
             'translation_target_language',
             'hourly_scheduler',
             'filter_to_latest_fetched_slot_on_open',
+            'always_resolve_unresolved_references',
             'relay_fetch_concurrency',
             'ai_evaluation_concurrency',
             'archive_signal_review_mode',
@@ -510,6 +514,24 @@ function renderSettingsWeb({
             [],
           ),
           el('text', { weight: 'semibold', size: 'sm' }, [
+            text('Unresolved references'),
+          ]),
+          el(
+            'select',
+            {
+              formFieldName: 'always_resolve_unresolved_references',
+              value: settings.alwaysResolveUnresolvedReferences
+                ? 'enabled'
+                : 'disabled',
+              choices: ['enabled', 'disabled'],
+              choiceLabels: {
+                enabled: 'Always resolve automatically',
+                disabled: 'Show on demand',
+              },
+            },
+            [],
+          ),
+          el('text', { weight: 'semibold', size: 'sm' }, [
             text('Concurrent relay groups'),
           ]),
           el(
@@ -617,6 +639,10 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
     params.parsed.options.filter_to_latest_fetched_slot_on_open,
   );
 
+  const alwaysResolveUnresolvedReferences = parseEnabledSetting(
+    params.parsed.options.always_resolve_unresolved_references,
+  );
+
   const archiveSignalReviewMode = parseSignalReviewMode(
     params.parsed.options.archive_signal_review_mode,
     'Archive signal review mode',
@@ -646,6 +672,7 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
     defaultLanguage !== undefined ||
     translationTargetLanguage !== undefined ||
     filterToLatestFetchedSlotOnOpen !== undefined ||
+    alwaysResolveUnresolvedReferences !== undefined ||
     hourlySchedulerRequested ||
     relayFetchConcurrency !== undefined ||
     aiEvaluationConcurrency !== undefined ||
@@ -694,6 +721,9 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
     filterToLatestFetchedSlotOnOpen:
       filterToLatestFetchedSlotOnOpen ??
       current.filterToLatestFetchedSlotOnOpen,
+    alwaysResolveUnresolvedReferences:
+      alwaysResolveUnresolvedReferences ??
+      current.alwaysResolveUnresolvedReferences,
     relayFetchConcurrency:
       relayFetchConcurrency ?? current.relayFetchConcurrency,
     aiEvaluationConcurrency:

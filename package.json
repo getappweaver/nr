@@ -1,11 +1,11 @@
 {
   "name": "appweaver-nr-plugin",
-  "version": "2.0.1",
+  "version": "3.0.0",
   "appweaver": {
     "title": "Nostr Radar",
     "icon": "./commands/list/renderers/list.svg",
     "website": "https://getappweaver.com/apps/nostr-radar",
-    "coreApiVersion": "^11.0.1",
+    "coreApiVersion": "^11.2.3",
     "capabilities": {
       "provides": [],
       "uses": [

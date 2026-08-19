@@ -88,6 +88,14 @@ export const settingsDefinition = (
       choices: ['enabled', 'disabled'],
     },
     {
+      name: 'always_resolve_unresolved_references',
+      flag: '--always-resolve-unresolved-references',
+      summary: 'Automatically load unresolved referenced posts.',
+      kind: 'string',
+      required: false,
+      choices: ['enabled', 'disabled'],
+    },
+    {
       name: 'relay_fetch_concurrency',
       flag: '--relay-fetch-concurrency',
       summary: 'Maximum relay-author groups fetched concurrently.',

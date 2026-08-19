@@ -28,6 +28,7 @@ export const listDefinition = (
         'posts',
         'replies',
         'comments',
+        'highlights',
         'reposts',
         'quotes',
         'reactions',

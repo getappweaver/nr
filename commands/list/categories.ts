@@ -5,6 +5,7 @@ export const NR_FEED_CATEGORIES = [
   'long-form',
   'replies',
   'comments',
+  'highlights',
   'reposts',
   'quotes',
   'reactions',
@@ -21,6 +22,7 @@ export const NR_FEED_CATEGORY_LABELS: Record<NrFeedCategory, string> = {
   'long-form': 'Long-form posts',
   replies: 'Replies',
   comments: 'NIP-22 comments',
+  highlights: 'Highlights',
   reposts: 'Reposts',
   quotes: 'Quotes',
   reactions: 'Likes / Reactions',
@@ -67,6 +69,10 @@ export function kindsForNrFeedCategories(
     kinds.add(30023);
   }
 
+  if (categories.includes('highlights')) {
+    kinds.add(9802);
+  }
+
   if (categories.includes('reposts')) {
     kinds.add(6);
     kinds.add(16);
@@ -98,6 +104,10 @@ export function categoryForNrEvent(event: NostrEvent): NrFeedCategory | null {
 
   if (event.kind === 30023) {
     return 'long-form';
+  }
+
+  if (event.kind === 9802) {
+    return 'highlights';
   }
 
   if (event.kind === 6 || event.kind === 16) {
