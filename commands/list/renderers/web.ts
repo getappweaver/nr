@@ -1644,6 +1644,7 @@ type UnresolvedReplyReferenceProps = {
   id: string;
   relay: string | null;
   mode: NrListMode;
+  sharePrefixes: NostrSharePrefixes;
 };
 
 function unresolvedReplyReference({
@@ -1651,12 +1652,14 @@ function unresolvedReplyReference({
   id,
   relay,
   mode,
+  sharePrefixes,
 }: UnresolvedReplyReferenceProps): WebNostrPostReference {
   return {
     entityKey: entityKey(id),
     type: 'event',
     id,
     relayHints: relay ? [relay] : [],
+    sharePrefixes,
     resolutionStatus: 'unresolved',
     readAction: markAction({ alias, eventId: id, state: 'read', mode }),
     archiveAction: markAction({ alias, eventId: id, state: 'archived', mode }),
@@ -1727,6 +1730,7 @@ function threadContextReferences({
         id: reference.id,
         relay: reference.relay,
         mode,
+        sharePrefixes,
       });
     }
 
@@ -2298,6 +2302,7 @@ function mergedActivityNode({
           id: reference.id,
           relay: reference.relay,
           mode,
+          sharePrefixes,
         });
   });
 
@@ -3458,6 +3463,7 @@ function profileEventNode({
                 id: reference.id,
                 relay: reference.relay,
                 mode,
+                sharePrefixes,
               });
         })
       : [];
