@@ -233,7 +233,7 @@ export function adaptTaxonomyCommand(
 ): string | WebNodeRoot {
   void params.command;
   void params.identity;
-  void params.runAgent;
+  void params.agent;
   void params.storedCtx;
 
   const type = taxonomyType(params.parsed.options.type);

@@ -2,6 +2,7 @@ import { nip19 } from 'nostr-tools';
 
 import { TranslationV1 } from '@src/capabilities/translation.v1';
 import type { CapabilityResourceRef } from '@src/capabilities/types';
+import type { PluginAgentDefaults } from '@src/core/plugin';
 import type { CachedProfile } from '@src/db';
 import { parseEventReferences } from '@src/nostr/event-references';
 import { nostrShareUrl, type NostrSharePrefixes } from '@src/web/nostr-share';
@@ -142,6 +143,8 @@ const nrListStylesheet = {
 type RenderNrListWebProps = {
   alias: string;
   listData: NrListData;
+  agentDefaults: PluginAgentDefaults;
+  effectiveModel: string;
   schedulerResource: CapabilityResourceRef | null;
   profiles: Map<string, CachedProfile>;
 };
@@ -2816,6 +2819,19 @@ function taxonomyEditorAction(alias: string, type: 'topic' | 'mood') {
   };
 }
 
+function agentSettingsAction(alias: string) {
+  return {
+    type: 'command' as const,
+    command: alias,
+    subcommand: 'settings',
+    arguments: {},
+    options: { agent: true },
+    surface: 'modal' as const,
+    modalTitle: 'Nostr radar AI settings',
+    recordInTimeline: false,
+  };
+}
+
 function settingsAction(alias: string) {
   return {
     type: 'command' as const,
@@ -3601,6 +3617,8 @@ function activityEventNode({
 export function renderNrListWeb({
   alias,
   listData,
+  agentDefaults,
+  effectiveModel,
   schedulerResource,
   profiles,
 }: RenderNrListWebProps): WebNodeRoot {
@@ -3609,6 +3627,8 @@ export function renderNrListWeb({
 
   const translationTargetLanguage =
     listData.settings.translationTargetLanguage ?? 'en';
+
+  const effectiveBackend = listData.settings.backend ?? agentDefaults.backend;
 
   const fetchCoverage =
     listData.mode === 'timeline' ? fetchCoverageBar(alias, listData) : null;
@@ -3671,6 +3691,18 @@ export function renderNrListWeb({
           mode: listData.mode,
           selectedTimeRanges: listData.selectedTimeRanges,
         }),
+        el('row', { gap: 'xs', itemAlign: 'center' }, [
+          text(`Backend ${effectiveBackend}, Model ${effectiveModel}`),
+          el(
+            'button',
+            {
+              label: 'Manage',
+              className: 'web-button--link',
+              action: agentSettingsAction(alias),
+            },
+            [],
+          ),
+        ]),
         ...(listData.mode !== 'archive'
           ? [
               listFilterPanel({

@@ -120,7 +120,7 @@ type MapWithConcurrencyProps<T, R> = {
 
 type FetchRuntimeParams = Pick<
   NrCommandAdapterParams,
-  'db' | 'source' | 'runAgent' | 'sendReply' | 'storedCtx'
+  'db' | 'source' | 'agent' | 'sendReply' | 'storedCtx'
 >;
 
 type FetchEvaluateProps = {
@@ -899,7 +899,7 @@ async function runFetchEvaluate({
                 audienceReactions:
                   audienceReactionsByTarget.get(classificationEvent.id) ?? [],
                 storedCtx: params.storedCtx,
-                runAgent: params.runAgent,
+                agent: params.agent,
                 abortSignal: classificationAbortController.signal,
               }),
               label: `nr classification ${parsed.data.id}`,

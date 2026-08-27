@@ -188,7 +188,7 @@ export async function adaptListParseSingleCommand(
         referencedEvents: referencedEventsResult.events,
         audienceReactions: [],
         storedCtx: params.storedCtx,
-        runAgent: params.runAgent,
+        agent: params.agent,
         abortSignal: null,
       }),
   });

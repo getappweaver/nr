@@ -65,7 +65,7 @@ export async function adaptMarkCommand(
   void params.command;
   void params.source;
   void params.identity;
-  void params.runAgent;
+  void params.agent;
 
   const positionalEventId = stringValue(params.parsed.arguments.event_id);
   const optionEventId = stringValue(params.parsed.options.id);

@@ -1,10 +1,7 @@
-import { dirname } from 'path';
-
 import type { Database } from 'bun:sqlite';
 
-import { createBackend } from '@src/backends/factory';
 import { getOutputString } from '@src/backends/types';
-import type { RunAgentFn } from '@src/core/plugin';
+import type { PluginAgentService } from '@src/core/plugin';
 import { parseRelayUrls } from '@src/env';
 
 import {
@@ -32,7 +29,7 @@ type ClassifyEventWithNrAiProps = {
   referencedEvents: NostrEvent[] | null;
   audienceReactions: NrAudienceReaction[];
   storedCtx: NrRuntimeContext;
-  runAgent: RunAgentFn | null;
+  agent: PluginAgentService;
   abortSignal: AbortSignal | null;
 };
 
@@ -77,11 +74,9 @@ export async function classifyEventWithNrAi({
   referencedEvents,
   audienceReactions,
   storedCtx,
-  runAgent,
+  agent,
   abortSignal,
 }: ClassifyEventWithNrAiProps): Promise<EventClassification> {
-  void runAgent;
-
   const fallback = classifyEvent(event);
   const settings = getNrSettings(db);
 
@@ -107,49 +102,27 @@ export async function classifyEventWithNrAi({
     }),
   });
 
-  const backendName = settings.backend ?? storedCtx.defaults.backend;
-  const modelOverride = settings.model ?? storedCtx.defaults.model;
-  const dmBotRoot = process.cwd();
-
-  const cwd =
-    storedCtx.defaults.workspace_target === 'appweaver'
-      ? dmBotRoot
-      : dirname(dmBotRoot);
-
-  const backend = createBackend({
-    backendName,
-    dmBotRoot,
-    cursorMode: storedCtx.defaults.mode,
-    opencodeAgentName:
-      backendName === 'opencode' ? storedCtx.defaults.mode : null,
-    attachUrl: null,
-    modelOverride,
-    providerName: storedCtx.defaults.provider,
-  });
-
-  const sessionId = await backend.createSession(cwd);
-
-  const result = await backend.runMessage({
-    sessionId,
-    content: prompt,
-    cursorMode: storedCtx.defaults.mode,
-    opencodeAgentName:
-      backendName === 'opencode' ? storedCtx.defaults.mode : null,
-    cwd,
-    getRoutstrSkKey: storedCtx.getRoutstrSkKey,
-    modelOverride,
+  const result = await agent.run({
+    prompt,
+    sessionId: null,
+    backend: settings.backend,
+    provider: null,
+    model: settings.model,
+    mode: null,
+    workspaceTarget: null,
+    cwd: null,
     onAgentStreamChunk: null,
-    streamAbortSignal: abortSignal,
-    skipRuntimeContext: true,
+    abortSignal,
+    context: null,
   });
 
   if (result.type === 'error') {
-    return { ...fallback, model: `${backend.modelName}:fallback` };
+    return { ...fallback, model: `${result.backend}:fallback` };
   }
 
   return parseAiClassification({
     raw: getOutputString(result),
-    model: result.model ?? backend.modelName,
+    model: result.model ?? result.backend,
     fallback,
   });
 }

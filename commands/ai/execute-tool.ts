@@ -8,16 +8,8 @@ import {
   createCapabilityClient,
 } from '@src/core/capabilities/registry';
 import { monitoring } from '@src/core/monitoring';
-import {
-  getAgentBackend,
-  getCurrentOrDefaultMode,
-  getModelOverride,
-  getProviderName,
-  getRoutstrSkKey,
-  getWorkspaceTarget,
-  initSkKeyEncryption,
-  openCoreDb,
-} from '@src/db';
+import type { PluginAgentService } from '@src/core/plugin';
+import { getRoutstrSkKey, initSkKeyEncryption, openCoreDb } from '@src/db';
 import { loadBotConfig } from '@src/env';
 import { openNostrCacheDb } from '@src/nostr/cache/db';
 import { PROFILE_RELAYS_FOR_QUERY } from '@src/nostr/nip65';
@@ -38,6 +30,7 @@ type ExecuteToolProps = {
   db: Database;
   pool: SimplePool;
   masterPubkey: string;
+  agent: PluginAgentService;
 };
 
 const HOUR_SECONDS = 60 * 60;
@@ -47,6 +40,7 @@ export async function executeTool({
   db,
   pool,
   masterPubkey,
+  agent,
 }: ExecuteToolProps): Promise<string> {
   void call.window;
 
@@ -72,8 +66,6 @@ export async function executeTool({
   });
 
   try {
-    const backend = getAgentBackend(coreDb);
-
     const until =
       Math.floor(Math.floor(Date.now() / 1000) / HOUR_SECONDS) * HOUR_SECONDS;
 
@@ -83,7 +75,7 @@ export async function executeTool({
       params: {
         db,
         source: 'local',
-        runAgent: null,
+        agent,
         sendReply: null,
         storedCtx: {
           pool,
@@ -95,15 +87,8 @@ export async function executeTool({
             fallbackRelays: config.botRelayUrls,
           }),
           nostrResolution: nostrResolutionRuntime.service,
-          defaults: {
-            backend,
-            provider: getProviderName(coreDb),
-            model: getModelOverride(coreDb, backend),
-            mode: getCurrentOrDefaultMode(coreDb),
-            workspace_target: getWorkspaceTarget(coreDb),
-          },
+          agent,
           getRoutstrSkKey: () => getRoutstrSkKey(coreDb),
-          getAvailableModels: async () => [],
           capabilities: createCapabilityClient({
             registry: capabilityRegistry,
             caller: {

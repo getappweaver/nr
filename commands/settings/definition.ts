@@ -27,6 +27,13 @@ export const settingsDefinition = (
       required: false,
     },
     {
+      name: 'agent',
+      flag: '--agent',
+      summary: 'Open the backend and model settings dialog.',
+      kind: 'boolean',
+      required: false,
+    },
+    {
       name: 'instructions',
       flag: '--instructions',
       summary: 'Classification instructions for nr parse.',

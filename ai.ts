@@ -32,6 +32,7 @@ export const aiDefinition = {
     return executeTool({
       call: props.call,
       db: props.db,
+      agent: props.agent,
       pool: props.pool,
       masterPubkey: props.masterPubkey,
     });

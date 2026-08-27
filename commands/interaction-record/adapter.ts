@@ -36,7 +36,7 @@ export function adaptInteractionRecordCommand(
   void params.command;
   void params.source;
   void params.identity;
-  void params.runAgent;
+  void params.agent;
 
   const targetEventId = stringOption(params.parsed.options.target_event_id);
 

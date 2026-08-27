@@ -4,9 +4,13 @@ All notable changes for each version are listed under the corresponding `v*.*.*`
 Tags and this file are updated by the post-commit hook when you commit with `--patch`, `--minor`, or `--major` (see CONTRIBUTING.md).
 You can also run `bun run release:changelog` to rewrite this file from tags.
 
+## [v3.1.0] - 2026-08-27
+
+- feat: Using new PluginContext PluginAgentService (cd35819)
+
 ## [v3.0.1] - 2026-08-24
 
-- fix: preserve Nostr share prefixes on unresolved references (fc11b6c)
+- fix: preserve Nostr share prefixes on unresolved references (a9e1990)
 
 ## [v3.0.0] - 2026-08-19
 

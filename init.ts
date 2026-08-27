@@ -60,7 +60,7 @@ export const NrPlugin: BotPlugin = {
       source: context.source,
       identity: NrPlugin.identity,
       storedCtx: NrPluginContext,
-      runAgent: context.runAgent,
+      agent: context.agent,
       sendReply: context.sendReply ?? NrPluginContext.sendReply,
       jsonPayload: context.jsonPayload,
     });

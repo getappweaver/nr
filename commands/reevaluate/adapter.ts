@@ -137,7 +137,7 @@ export async function adaptReevaluateCommand(
           referencedEvents,
           audienceReactions: [],
           storedCtx: params.storedCtx,
-          runAgent: params.runAgent,
+          agent: params.agent,
           abortSignal: null,
         }),
     })

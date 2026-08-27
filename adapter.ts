@@ -4,7 +4,11 @@
 
 import type { Database } from 'bun:sqlite';
 
-import type { PluginIdentity, RunAgentFn, SendReplyFn } from '@src/core/plugin';
+import type {
+  PluginAgentService,
+  PluginIdentity,
+  SendReplyFn,
+} from '@src/core/plugin';
 import type { MessageSource } from '@src/messaging';
 import { parseCliInput, parseStructuredInput } from '@src/system/parser-cli';
 import type { WebHandlerResult } from '@src/web/ui-schema';
@@ -144,7 +148,7 @@ type HandleNrAdapterProps = {
   source: MessageSource;
   identity: PluginIdentity;
   storedCtx: NrRuntimeContext;
-  runAgent: RunAgentFn | null;
+  agent: PluginAgentService;
   sendReply: SendReplyFn | null;
   jsonPayload: unknown;
 };
@@ -182,7 +186,7 @@ export async function handleNrAdapter({
   source,
   identity,
   storedCtx,
-  runAgent,
+  agent,
   sendReply,
   jsonPayload,
 }: HandleNrAdapterProps): Promise<WebHandlerResult> {
@@ -227,7 +231,7 @@ export async function handleNrAdapter({
       parsed,
       command,
       identity,
-      runAgent,
+      agent,
       sendReply,
       storedCtx,
       jsonPayload,

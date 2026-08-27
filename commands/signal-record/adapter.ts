@@ -106,7 +106,7 @@ export function adaptSignalRecordCommand(
 ): string {
   void params.command;
   void params.identity;
-  void params.runAgent;
+  void params.agent;
   void params.sendReply;
   void params.storedCtx;
   void params.jsonPayload;

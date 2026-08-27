@@ -181,6 +181,8 @@ export function renderNrListParseSingleWeb({
                   translationTargetLanguage:
                     settings.translationTargetLanguage ?? 'en',
                   rankingScore: null,
+                  resolveReferencesAutomatically:
+                    settings.alwaysResolveUnresolvedReferences,
                   mode: 'timeline',
                   renderScope: 'parse-single',
                 }),

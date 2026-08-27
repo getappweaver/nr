@@ -664,13 +664,6 @@ export function fetchCoverageBar(
   const node = el('stack', { id: 'nr-fetch-coverage', gap: 'xs' }, [
     el('row', { gap: 'xs', itemAlign: 'baseline', align: 'between' }, [
       el('text', { weight: 'semibold', size: 'sm' }, [text('Timeline bar')]),
-      el('text', { tone: 'muted', size: 'sm' }, [
-        text(
-          `Backend ${listData.settings.backend ?? 'default'}, Model ${
-            listData.settings.model ?? 'default'
-          }`,
-        ),
-      ]),
     ]),
     unreadSlotsToggle(listData.unreadFetchSlots.length),
     el(

@@ -153,7 +153,7 @@ async function runListCommand(
 ): Promise<string | WebNodeRoot> {
   void params.command;
   void params.identity;
-  void params.runAgent;
+  void params.agent;
 
   const rawMode = params.parsed.options.mode;
 
@@ -265,6 +265,13 @@ async function runListCommand(
         renderNrListWeb({
           alias: params.alias,
           listData,
+          agentDefaults: params.storedCtx.agent.getDefaults(),
+          effectiveModel: params.storedCtx.agent.getEffectiveModel({
+            backend: listData.settings.backend,
+            model: listData.settings.model,
+            mode: null,
+            workspaceTarget: null,
+          }),
           schedulerResource: getNrSchedulerResource(params.db),
           profiles,
         }),

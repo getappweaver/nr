@@ -64,7 +64,7 @@ function parseBackend(value: unknown): AgentBackendName | null | undefined {
     return undefined;
   }
 
-  if (value === '') {
+  if (value === '' || value === 'default') {
     return null;
   }
 
@@ -180,7 +180,9 @@ function formatSettings(settings: ReturnType<typeof getNrSettings>): string {
 type RenderSettingsWebProps = {
   alias: string;
   settings: ReturnType<typeof getNrSettings>;
+  defaults: ReturnType<NrCommandAdapterParams['agent']['getDefaults']>;
   modelChoices: string[];
+  agentOnly: boolean;
   message: string | null;
   scheduler: SchedulerSettingsState | null;
   schedulerSetupNeeded: boolean;
@@ -239,14 +241,18 @@ async function renderSettingsResult({
   schedulerSetupNeeded,
 }: RenderSettingsResultProps): Promise<WebNodeRoot> {
   const [modelChoices, scheduler] = await Promise.all([
-    params.storedCtx.getAvailableModels().catch(() => []),
+    params.storedCtx.agent
+      .getAvailableModels({ backend: settings.backend })
+      .catch(() => []),
     loadSchedulerSettingsState(params),
   ]);
 
   return renderSettingsWeb({
     alias: params.alias,
     settings,
+    defaults: params.storedCtx.agent.getDefaults(),
     modelChoices,
+    agentOnly: parseBooleanOption(params.parsed.options.agent),
     message,
     scheduler,
     schedulerSetupNeeded,
@@ -256,17 +262,84 @@ async function renderSettingsResult({
 function renderSettingsWeb({
   alias,
   settings,
+  defaults,
   modelChoices,
+  agentOnly,
   message,
   scheduler,
   schedulerSetupNeeded,
 }: RenderSettingsWebProps): WebNodeRoot {
-  const modelCatalog =
-    settings.model && !modelChoices.includes(settings.model)
-      ? [settings.model, ...modelChoices]
-      : modelChoices;
+  if (agentOnly) {
+    const modelCatalog =
+      settings.model && !modelChoices.includes(settings.model)
+        ? [settings.model, ...modelChoices]
+        : modelChoices;
 
-  const choices = ['reset', ...modelCatalog];
+    return {
+      kind: 'ui',
+      version: 1,
+      meta: { command: alias, subcommand: 'settings' },
+      tree: el('stack', { gap: 'sm' }, [
+        ...(message
+          ? [el('text', { tone: 'success', size: 'sm' }, [text(message)])]
+          : []),
+        el(
+          'form',
+          {
+            className: 'web-form web-form--stacked',
+            formOptionFieldNames: ['backend', 'model'],
+            action: {
+              type: 'command',
+              command: alias,
+              subcommand: 'settings',
+              arguments: {},
+              options: { agent: true },
+              surface: 'modal',
+              modalTitle: 'Nostr radar AI settings',
+              recordInTimeline: false,
+            },
+          },
+          [
+            el('text', { weight: 'semibold' }, [
+              text('Nostr radar AI settings'),
+            ]),
+            el('text', { weight: 'semibold', size: 'sm' }, [
+              text('AI backend'),
+            ]),
+            el(
+              'select',
+              {
+                formFieldName: 'backend',
+                value: settings.backend ?? 'default',
+                choices: ['default', 'cursor', 'opencode'],
+                choiceLabels: {
+                  default: `current (${defaults.backend})`,
+                  cursor: 'cursor',
+                  opencode: 'opencode',
+                },
+              },
+              [],
+            ),
+            el('text', { weight: 'semibold', size: 'sm' }, [text('AI model')]),
+            el(
+              'textField',
+              {
+                formFieldName: 'model',
+                inputPlaceholder: defaults.effectiveModel,
+                value: settings.model ?? '',
+                choices: ['reset', ...modelCatalog],
+                choiceLabels: { reset: 'Clear / use current' },
+              },
+              [],
+            ),
+            el('row', { className: 'web-form__actions', gap: 'xs' }, [
+              el('button', { label: 'Save', htmlType: 'submit' }, []),
+            ]),
+          ],
+        ),
+      ]),
+    };
+  }
 
   return {
     kind: 'ui',
@@ -281,8 +354,6 @@ function renderSettingsWeb({
         {
           className: 'web-form web-form--stacked',
           formOptionFieldNames: [
-            'backend',
-            'model',
             'instructions',
             'event_share_prefix',
             'profile_share_prefix',
@@ -315,33 +386,6 @@ function renderSettingsWeb({
             text('Signal review'),
           ]),
           ...signalReviewSelectNodes(settings),
-          el('text', { weight: 'semibold', size: 'sm' }, [text('AI backend')]),
-          el(
-            'select',
-            {
-              formFieldName: 'backend',
-              value: settings.backend ?? '',
-              choices: ['', 'cursor', 'opencode'],
-              choiceLabels: {
-                '': 'default',
-                cursor: 'cursor',
-                opencode: 'opencode',
-              },
-            },
-            [],
-          ),
-          el('text', { weight: 'semibold', size: 'sm' }, [text('AI model')]),
-          el(
-            'textField',
-            {
-              formFieldName: 'model',
-              inputPlaceholder: 'model override (reset = default)',
-              value: settings.model ?? '',
-              choices,
-              choiceLabels: { reset: 'Clear / reset' },
-            },
-            [],
-          ),
           el('text', { weight: 'semibold', size: 'sm' }, [
             text('Concurrent AI evaluators'),
           ]),
@@ -572,7 +616,7 @@ function renderSettingsWeb({
 export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
   void params.command;
   void params.identity;
-  void params.runAgent;
+  void params.agent;
 
   if (parseBooleanOption(params.parsed.options.reset)) {
     const settings = resetNrSettings(params.db);

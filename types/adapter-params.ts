@@ -2,8 +2,8 @@ import type { Database } from 'bun:sqlite';
 
 import type {
   PluginContext,
+  PluginAgentService,
   PluginIdentity,
-  RunAgentFn,
   SendReplyFn,
 } from '@src/core/plugin';
 import type { MessageSource } from '@src/messaging';
@@ -17,9 +17,8 @@ export type NrRuntimeContext = Pick<
   | 'masterPubkey'
   | 'wot'
   | 'nostrResolution'
-  | 'defaults'
+  | 'agent'
   | 'getRoutstrSkKey'
-  | 'getAvailableModels'
   | 'capabilities'
   | 'monitoring'
 >;
@@ -32,7 +31,7 @@ export type NrCommandAdapterParams = {
   parsed: ParsedCliInvocation;
   command: ReturnType<typeof getNrCommandDefinition>;
   identity: PluginIdentity;
-  runAgent: RunAgentFn | null;
+  agent: PluginAgentService;
   sendReply: SendReplyFn | null;
   storedCtx: NrRuntimeContext;
   jsonPayload: unknown;
