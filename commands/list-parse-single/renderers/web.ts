@@ -3,7 +3,8 @@ import type { WebNode, WebNodeRoot } from '@src/web/ui-schema';
 
 import { nrSharePrefixes, type NrSettings } from '../../../settings';
 
-import { el, eventNode, text } from '../../list/renderers/web';
+import { eventNode } from '../../list/renderers/event-nodes';
+import { el, text } from '../../list/renderers/primitives';
 import type { NrEvent, NrInteraction } from '../../shared/types';
 
 type RenderNrListParseSingleWebProps = {

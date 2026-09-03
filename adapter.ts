@@ -29,6 +29,7 @@ import { adaptReadCommand } from './commands/read/adapter';
 import { adaptReevaluateCommand } from './commands/reevaluate/adapter';
 import { adaptScheduleCommand } from './commands/schedule/adapter';
 import { adaptSettingsCommand } from './commands/settings/adapter';
+import { adaptSignalDeleteCommand } from './commands/signal-delete/adapter';
 import { adaptSignalRecordCommand } from './commands/signal-record/adapter';
 import { adaptSignalReviewCommand } from './commands/signal-review/adapter';
 import { adaptTaxonomyCommand } from './commands/taxonomy/adapter';
@@ -47,6 +48,7 @@ type NrSubcommand =
   | 'settings'
   | 'signal-review'
   | 'signal-record'
+  | 'signal-delete'
   | 'schedule'
   | 'context'
   | 'taxonomy'
@@ -81,6 +83,7 @@ const subcommandAdapters: Record<NrSubcommand, NrCommandAdapter> = {
   settings: adaptSettingsCommand,
   'signal-review': adaptSignalReviewCommand,
   'signal-record': adaptSignalRecordCommand,
+  'signal-delete': adaptSignalDeleteCommand,
   schedule: adaptScheduleCommand,
   context: adaptContextCommand,
   taxonomy: adaptTaxonomyCommand,
@@ -125,6 +128,7 @@ function isNrSubcommand(value: string): value is NrSubcommand {
     value === 'settings' ||
     value === 'signal-review' ||
     value === 'signal-record' ||
+    value === 'signal-delete' ||
     value === 'schedule' ||
     value === 'context' ||
     value === 'taxonomy' ||

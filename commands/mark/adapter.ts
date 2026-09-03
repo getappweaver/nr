@@ -1,5 +1,6 @@
 import { classifyEvent } from '../../classifier';
 import {
+  getNr,
   markEventState,
   markTaggedEventsState,
   parseAndStoreEvent,
@@ -101,24 +102,12 @@ export async function adaptMarkCommand(
     return usage(params.prefix, params.alias);
   }
 
-  const markEvent = () =>
-    markEventState({
-      db: params.db,
-      eventId,
-      state,
-    });
-
-  let event =
-    state === 'read' && params.storedCtx.monitoring.currentContext()
-      ? await params.storedCtx.monitoring.withSpan({
-          name: 'nr.read.db',
-          attributes: { eventId },
-          parent: null,
-          run: markEvent,
-        })
-      : markEvent();
-
-  if (!event) {
+  // Store-first: a raw event action (Profile embeds, thread context)
+  // carries the full event because the target may live only in the live
+  // profile cache, not in nr_events. Store it before marking so the mark
+  // applies to the requested event itself instead of fanning out to the
+  // cached activities that reference it.
+  if (!getNr(params.db, eventId)) {
     const rawEvent = parseEventJson(params.parsed.options.event_json);
 
     if (rawEvent?.id === eventId) {
@@ -132,14 +121,25 @@ export async function adaptMarkCommand(
         nostrResolution: params.storedCtx.nostrResolution,
         classify: classifyEvent,
       });
-
-      event = markEventState({
-        db: params.db,
-        eventId,
-        state,
-      });
     }
   }
+
+  const markEvent = () =>
+    markEventState({
+      db: params.db,
+      eventId,
+      state,
+    });
+
+  const event =
+    state === 'read' && params.storedCtx.monitoring.currentContext()
+      ? await params.storedCtx.monitoring.withSpan({
+          name: 'nr.read.db',
+          attributes: { eventId },
+          parent: null,
+          run: markEvent,
+        })
+      : markEvent();
 
   if (!event) {
     return `Not found: ${eventId}`;

@@ -14,6 +14,7 @@ import { parseDefinition } from './commands/parse/definition';
 import { reevaluateDefinition } from './commands/reevaluate/definition';
 import { scheduleDefinition } from './commands/schedule/definition';
 import { settingsDefinition } from './commands/settings/definition';
+import { signalDeleteDefinition } from './commands/signal-delete/definition';
 import { signalRecordDefinition } from './commands/signal-record/definition';
 import { signalReviewDefinition } from './commands/signal-review/definition';
 import { taxonomyDefinition } from './commands/taxonomy/definition';
@@ -38,6 +39,7 @@ export const commandDefinition = (
     settingsDefinition(prefix, alias),
     signalReviewDefinition(),
     signalRecordDefinition(),
+    signalDeleteDefinition(),
     scheduleDefinition(prefix, alias),
     contextDefinition(prefix, alias),
     taxonomyDefinition(),

@@ -143,6 +143,11 @@ function collectProfilePubkeys(listData: NrListData): string[] {
               (reference) => reference.pubkey,
             ),
           ]),
+        )
+        .concat(
+          listData.signalAuthorAggregates.map(
+            (aggregate) => aggregate.authorPubkey,
+          ),
         ),
     ),
   ];
@@ -164,7 +169,9 @@ async function runListCommand(
         ? 'profile'
         : rawMode === 'for-you'
           ? 'for-you'
-          : 'timeline';
+          : rawMode === 'signals'
+            ? 'signals'
+            : 'timeline';
 
   const rawKinds = params.parsed.options.kinds;
 
@@ -174,7 +181,7 @@ async function runListCommand(
 
   const timeSelection = parseTimeSelection(params.parsed.options);
 
-  if (mode !== 'archive' && rawKinds !== undefined) {
+  if (mode !== 'archive' && mode !== 'signals' && rawKinds !== undefined) {
     saveNrListFilter({
       db: params.db,
       mode,

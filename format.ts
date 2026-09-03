@@ -25,6 +25,30 @@ function formatGroups(title: string, groups: NrTagGroup[]): string[] {
 }
 
 export function formatNrListData(listData: NrListData): string {
+  if (listData.mode === 'signals') {
+    if (listData.interestSignals.length === 0) {
+      return 'No signals yet.';
+    }
+
+    const lines = [`Signals: ${listData.interestSignals.length}`, '', 'Topics'];
+
+    for (const aggregate of listData.signalTopicAggregates) {
+      lines.push(
+        `  ${aggregate.topic} (${aggregate.matchedEventCount} matched, ${aggregate.signalCount} signals, weight ${aggregate.totalWeight}, affinity ${aggregate.affinity.toFixed(2)})`,
+      );
+    }
+
+    lines.push('', 'Authors');
+
+    for (const aggregate of listData.signalAuthorAggregates) {
+      lines.push(
+        `  ${aggregate.authorPubkey.slice(0, 12)} (${aggregate.matchedEventCount} matched, ${aggregate.signalCount} signals, weight ${aggregate.totalWeight}, learned ${aggregate.learnedAffinity.toFixed(2)})`,
+      );
+    }
+
+    return lines.join('\n');
+  }
+
   const noun = listData.mode === 'archive' ? 'archived' : 'unread';
 
   if (listData.unreadTotal === 0) {

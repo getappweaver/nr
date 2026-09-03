@@ -39,6 +39,8 @@ import type {
   NrListTimeRange,
   NrListTimeRangeSource,
   NrListTimeSelection,
+  NrSignalAuthorAggregate,
+  NrSignalTopicAggregate,
   NrUnreadFetchSlot,
   NrTagGroup,
   NrTaxonomyTerm,
@@ -1255,6 +1257,71 @@ export function removeNrInterestSignal({
   );
 }
 
+type DeleteNrTopicSignalsProps = {
+  db: DatabaseType;
+  topic: string;
+};
+
+export function deleteNrTopicSignals({
+  db,
+  topic,
+}: DeleteNrTopicSignalsProps): number {
+  const normalized = topic.trim().toLowerCase();
+
+  if (!normalized) {
+    return 0;
+  }
+
+  return db.transaction(() => {
+    const targets = listNrInterestSignals(db).filter((signal) =>
+      scoringTopics(signal.topics).includes(normalized),
+    );
+
+    const remove = db.prepare(
+      'DELETE FROM nr_interest_signals WHERE target_event_id = ? AND type = ?',
+    );
+
+    for (const signal of targets) {
+      remove.run(signal.targetEventId, signal.type);
+    }
+
+    return targets.length;
+  })();
+}
+
+type DeleteNrAuthorSignalsProps = {
+  db: DatabaseType;
+  authorPubkey: string;
+};
+
+export function deleteNrAuthorSignals({
+  db,
+  authorPubkey,
+}: DeleteNrAuthorSignalsProps): number {
+  const normalized = normalizeSignalAuthorPubkey(authorPubkey);
+
+  if (normalized === null) {
+    return 0;
+  }
+
+  return db.transaction(() => {
+    const targets = listNrInterestSignals(db).filter(
+      (signal) =>
+        normalizeSignalAuthorPubkey(signal.authorPubkey) === normalized,
+    );
+
+    const remove = db.prepare(
+      'DELETE FROM nr_interest_signals WHERE target_event_id = ? AND type = ?',
+    );
+
+    for (const signal of targets) {
+      remove.run(signal.targetEventId, signal.type);
+    }
+
+    return targets.length;
+  })();
+}
+
 export function getNrSignalReviewTarget({
   db,
   targetEventId,
@@ -2174,6 +2241,11 @@ function markEventIdsState({
   const column = markColumnForState(state);
   const value = markValueForState(state);
 
+  // Read/unread cascade to thread context and activities (seeing a post
+  // implies seeing its context). Archive/unarchive apply to exactly the
+  // selected events so one item can be archived independently.
+  const cascade = state === 'read' || state === 'unread';
+
   for (let index = 0; index < ids.length; index += MARK_EVENT_IDS_CHUNK_SIZE) {
     const chunk = ids.slice(index, index + MARK_EVENT_IDS_CHUNK_SIZE);
     const selectedValues = chunk.map(() => '(?)').join(', ');
@@ -2209,16 +2281,20 @@ function markEventIdsState({
              THEN e.referenced_events_json ELSE '[]' END
          ) reference
        ),
-       targets(id) AS (
-         SELECT id FROM selected
-         UNION
-         SELECT id FROM related
-         WHERE typeof(id) = 'text' AND length(id) > 0
-         UNION
-         SELECT activity.activity_event_id
-         FROM nr_activity_targets activity
-         JOIN selected s ON s.id = activity.target_event_id
-       )
+      targets(id) AS (
+        SELECT id FROM selected
+        ${
+          cascade
+            ? `UNION
+        SELECT id FROM related
+        WHERE typeof(id) = 'text' AND length(id) > 0
+        UNION
+        SELECT activity.activity_event_id
+        FROM nr_activity_targets activity
+        JOIN selected s ON s.id = activity.target_event_id`
+            : ''
+        }
+      )
        UPDATE nr_events
        SET ${column} = ?
        WHERE id IN (SELECT id FROM targets)`,
@@ -3034,6 +3110,182 @@ export function buildNrExplicitAuthorBiases(
 
 export const buildNrAuthorAffinities = buildNrExplicitAuthorBiases;
 
+type CountNrEventsWithTopicProps = {
+  db: DatabaseType;
+  topic: string;
+};
+
+export function countNrEventsWithTopicIncludingRead({
+  db,
+  topic,
+}: CountNrEventsWithTopicProps): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(DISTINCT e.id) AS count
+       FROM nr_events e
+       JOIN nr_event_tags t ON t.event_id = e.id
+       WHERE t.type = 'topic' AND t.tag = ? COLLATE NOCASE`,
+    )
+    .get(topic) as { count: number } | undefined;
+
+  return row?.count ?? 0;
+}
+
+type CountNrEventsWithAuthorProps = {
+  db: DatabaseType;
+  authorPubkey: string;
+};
+
+export function countNrEventsWithAuthorIncludingRead({
+  db,
+  authorPubkey,
+}: CountNrEventsWithAuthorProps): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS count
+       FROM nr_events
+       WHERE pubkey = ? COLLATE NOCASE`,
+    )
+    .get(authorPubkey) as { count: number } | undefined;
+
+  return row?.count ?? 0;
+}
+
+type BuildNrSignalAggregatesProps = {
+  db: DatabaseType;
+  signals: NrInterestSignal[];
+  topicAffinities: ReadonlyMap<string, number>;
+  learnedAuthorAffinities: ReadonlyMap<string, number>;
+};
+
+type BuildNrSignalAggregatesResult = {
+  topicAggregates: NrSignalTopicAggregate[];
+  authorAggregates: NrSignalAuthorAggregate[];
+};
+
+export function buildNrSignalAggregates({
+  db,
+  signals,
+  topicAffinities,
+  learnedAuthorAffinities,
+}: BuildNrSignalAggregatesProps): BuildNrSignalAggregatesResult {
+  const byTopic = new Map<string, NrInterestSignal[]>();
+  const byAuthor = new Map<string, NrInterestSignal[]>();
+
+  for (const signal of signals) {
+    for (const topic of scoringTopics(signal.topics)) {
+      const list = byTopic.get(topic) ?? [];
+
+      list.push(signal);
+      byTopic.set(topic, list);
+    }
+
+    const normalizedAuthor = normalizeSignalAuthorPubkey(signal.authorPubkey);
+
+    if (normalizedAuthor !== null) {
+      const list = byAuthor.get(normalizedAuthor) ?? [];
+
+      list.push(signal);
+      byAuthor.set(normalizedAuthor, list);
+    }
+  }
+
+  const topicAggregates: NrSignalTopicAggregate[] = [...byTopic.entries()].map(
+    ([topic, topicSignals]) => {
+      const byTypeMap = new Map<NrInterestSignalType, NrInterestSignal[]>();
+
+      for (const signal of topicSignals) {
+        const list = byTypeMap.get(signal.type) ?? [];
+
+        list.push(signal);
+        byTypeMap.set(signal.type, list);
+      }
+
+      const byType = [...byTypeMap.entries()]
+        .map(([type, typeSignals]) => ({
+          type,
+          count: typeSignals.length,
+          weight: NR_INTEREST_WEIGHTS[type] ?? 0,
+        }))
+        .sort((left, right) => right.count - left.count);
+
+      const sortedSignals = [...topicSignals].sort(
+        (left, right) => right.updatedAt - left.updatedAt,
+      );
+
+      return {
+        topic,
+        signalCount: topicSignals.length,
+        totalWeight: topicSignals.reduce(
+          (total, signal) => total + signal.weight,
+          0,
+        ),
+        affinity: topicAffinities.get(topic) ?? 0,
+        matchedEventCount: countNrEventsWithTopicIncludingRead({ db, topic }),
+        byType,
+        signals: sortedSignals,
+      };
+    },
+  );
+
+  topicAggregates.sort(
+    (left, right) =>
+      right.totalWeight - left.totalWeight ||
+      right.matchedEventCount - left.matchedEventCount ||
+      left.topic.localeCompare(right.topic),
+  );
+
+  const authorAggregates: NrSignalAuthorAggregate[] = [
+    ...byAuthor.entries(),
+  ].map(([authorPubkey, authorSignals]) => {
+    const byTypeMap = new Map<NrInterestSignalType, NrInterestSignal[]>();
+
+    for (const signal of authorSignals) {
+      const list = byTypeMap.get(signal.type) ?? [];
+
+      list.push(signal);
+      byTypeMap.set(signal.type, list);
+    }
+
+    const byType = [...byTypeMap.entries()]
+      .map(([type, typeSignals]) => ({
+        type,
+        count: typeSignals.length,
+        weight: NR_INTEREST_WEIGHTS[type] ?? 0,
+      }))
+      .sort((left, right) => right.count - left.count);
+
+    const sortedSignals = [...authorSignals].sort(
+      (left, right) => right.updatedAt - left.updatedAt,
+    );
+
+    return {
+      authorPubkey,
+      signalCount: sortedSignals.length,
+      totalWeight: sortedSignals.reduce(
+        (total, signal) => total + signal.weight,
+        0,
+      ),
+      learnedAffinity: learnedAuthorAffinities.get(authorPubkey) ?? 0,
+      matchedEventCount: countNrEventsWithAuthorIncludingRead({
+        db,
+        authorPubkey,
+      }),
+      byType,
+      signals: sortedSignals,
+    };
+  });
+
+  authorAggregates.sort(
+    (left, right) =>
+      right.totalWeight - left.totalWeight ||
+      right.matchedEventCount - left.matchedEventCount ||
+      left.authorPubkey.localeCompare(right.authorPubkey),
+  );
+
+  return { topicAggregates, authorAggregates };
+}
+
 type ScoreNrEventForYouProps = {
   event: NrEvent;
   topicAffinities: ReadonlyMap<string, number>;
@@ -3093,7 +3345,7 @@ export function getNrListData({
     mode === 'timeline' ? resolvedTimeSelection.ranges : [];
 
   const selectedCategories =
-    mode === 'archive'
+    mode === 'archive' || mode === 'signals'
       ? normalizeNrFeedCategories([])
       : getNrListFilter({
           db,
@@ -3107,7 +3359,7 @@ export function getNrListData({
   });
 
   const topicGroups =
-    mode === 'for-you'
+    mode === 'for-you' || mode === 'signals'
       ? []
       : buildGroups({
           db,
@@ -3127,7 +3379,7 @@ export function getNrListData({
   }
 
   const moodGroups =
-    mode === 'for-you'
+    mode === 'for-you' || mode === 'signals'
       ? []
       : buildGroups({
           db,
@@ -3185,7 +3437,7 @@ export function getNrListData({
   const activityTimePredicate = eventTimeRangePredicate(queryTimeRanges);
 
   const activityEvents =
-    mode === 'for-you'
+    mode === 'for-you' || mode === 'signals'
       ? []
       : (
           db
@@ -3281,6 +3533,16 @@ export function getNrListData({
     visibleScoredEvents.map(({ event, score }) => [event.id, score]),
   );
 
+  const signalAggregates =
+    mode === 'signals'
+      ? buildNrSignalAggregates({
+          db,
+          signals: interestSignals,
+          topicAffinities,
+          learnedAuthorAffinities,
+        })
+      : { topicAggregates: [], authorAggregates: [] };
+
   return {
     mode,
     selectedTimeRanges: resolvedTimeSelection.ranges,
@@ -3296,12 +3558,18 @@ export function getNrListData({
     moodGroups,
     languageGroups,
     unreadTotal:
-      mode === 'for-you' ? forYouEvents.length : visibleUnreadEventIds.size,
+      mode === 'for-you'
+        ? forYouEvents.length
+        : mode === 'signals'
+          ? interestSignals.length
+          : visibleUnreadEventIds.size,
     fetchCoverageNowSeconds: nowSeconds,
     fetchWindows,
     unreadFetchSlots: listUnreadFetchSlots(db, selectedCategories),
     interactions: listNrInteractions(db),
     interestSignals,
+    signalTopicAggregates: signalAggregates.topicAggregates,
+    signalAuthorAggregates: signalAggregates.authorAggregates,
     authorPreferences,
     taxonomyTerms: listNrTaxonomyTerms(db),
     settings,

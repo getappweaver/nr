@@ -16,15 +16,20 @@ children:
 # commands/list/renderers
 
 ## Purpose
-Renderers for the Nostr Radar list command, producing text and WebNode-based UI for timeline, profile, archive, and ranked feeds.
+Renderers for the Nostr Radar list command, producing text and WebNode-based UI for timeline, for-you, profile, archive, signals, and ranked feeds.
 
 ## Files
+- `archive.ts` - Archive-mode tree composition (Topics/Moods/Languages sections).
+- `event-nodes.ts` - Shared post rendering core: event/activity/profile nodes, grouping, sections, actions, embeds, thread context, and author preference actions.
 - `fetch-coverage.ts` - Builds the 24-hour fetch-coverage bar, including status styling and interval-specific fetch actions.
+- `for-you.ts` - For-You-mode tree composition (ranked events plus empty state).
 - `list.svg` - Nostr Radar icon asset.
-- `profile.ts` - Creates per-author like and dislike preference actions for rendered posts.
+- `primitives.ts` - Tiny WebNode builders (text, el, keyed, entity keys).
+- `profile.ts` - Profile-mode tree composition (profile events plus empty state).
+- `signals.ts` - Signals-mode tree: legend plus Topic/Author aggregates with score breakdowns.
 - `text.ts` - Delegates list output formatting to the shared text formatter.
-- `web.test.ts` - Verifies thread-context posts retain independent archive and preference actions.
-- `web.ts` - Main WebNode renderer for Nostr Radar feeds, posts, activity, filters, grouping, and interactive actions.
+- `timeline.ts` - Timeline-mode tree composition (Topics/Moods/Languages sections).
+- `web.ts` - Widget chrome (tabs, filter panel, toolbar) and render orchestration dispatching to per-mode renderers.
 
 ## Notes
 - Web actions refresh the list without recording timeline entries.

@@ -13,10 +13,10 @@ export const listDefinition = (
     {
       name: 'mode',
       flag: '--mode',
-      summary: 'List mode: timeline, for-you, profile, or archive.',
+      summary: 'List mode: timeline, for-you, profile, archive, or signals.',
       kind: 'string',
       required: false,
-      choices: ['timeline', 'for-you', 'profile', 'archive'],
+      choices: ['timeline', 'for-you', 'profile', 'archive', 'signals'],
     },
     {
       name: 'kinds',
@@ -59,7 +59,11 @@ export const listDefinition = (
       required: false,
     },
   ],
-  examples: [`${prefix}${alias} list`, `${prefix}${alias} list --mode archive`],
+  examples: [
+    `${prefix}${alias} list`,
+    `${prefix}${alias} list --mode archive`,
+    `${prefix}${alias} list --mode signals`,
+  ],
   monitoring: { name: 'nr.list', attributes: {} },
   webWidget: {
     placement: 'right',

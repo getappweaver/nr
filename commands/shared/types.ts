@@ -45,7 +45,8 @@ export type NrTagGroup = {
   events: NrEvent[];
 };
 
-export type NrListMode = 'timeline' | 'for-you' | 'profile' | 'archive';
+export type NrListMode =
+  'timeline' | 'for-you' | 'profile' | 'archive' | 'signals';
 
 export type NrListTimeRange = {
   since: number;
@@ -162,6 +163,26 @@ export type NrTaxonomyTerm = {
   updatedAt: number;
 };
 
+export type NrSignalTopicAggregate = {
+  topic: string;
+  signalCount: number;
+  totalWeight: number;
+  affinity: number;
+  matchedEventCount: number;
+  byType: Array<{ type: NrInterestSignalType; count: number; weight: number }>;
+  signals: NrInterestSignal[];
+};
+
+export type NrSignalAuthorAggregate = {
+  authorPubkey: string;
+  signalCount: number;
+  totalWeight: number;
+  learnedAffinity: number;
+  matchedEventCount: number;
+  byType: Array<{ type: NrInterestSignalType; count: number; weight: number }>;
+  signals: NrInterestSignal[];
+};
+
 export type NrListData = {
   mode: NrListMode;
   selectedTimeRanges: NrListTimeRange[];
@@ -182,6 +203,8 @@ export type NrListData = {
   unreadFetchSlots: NrUnreadFetchSlot[];
   interactions: NrInteraction[];
   interestSignals: NrInterestSignal[];
+  signalTopicAggregates: NrSignalTopicAggregate[];
+  signalAuthorAggregates: NrSignalAuthorAggregate[];
   authorPreferences: NrAuthorPreference[];
   taxonomyTerms: NrTaxonomyTerm[];
   settings: NrSettings;

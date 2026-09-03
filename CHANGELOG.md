@@ -4,9 +4,13 @@ All notable changes for each version are listed under the corresponding `v*.*.*`
 Tags and this file are updated by the post-commit hook when you commit with `--patch`, `--minor`, or `--major` (see CONTRIBUTING.md).
 You can also run `bun run release:changelog` to rewrite this file from tags.
 
+## [v3.2.0] - 2026-09-03
+
+- feat: signals tab, refactor (4704d00)
+
 ## [v3.1.0] - 2026-08-27
 
-- feat: Using new PluginContext PluginAgentService (cd35819)
+- feat: Using new PluginContext PluginAgentService (c7da52f)
 
 ## [v3.0.1] - 2026-08-24
 

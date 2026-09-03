@@ -3,7 +3,7 @@ import type { ClientViewRoot } from '@src/web/ui-schema';
 import { getNrAuthorPreference } from '../../db';
 import type { NrCommandAdapterParams } from '../../types/adapter-params';
 
-import { authorPreferenceActions } from '../list/renderers/profile';
+import { authorPreferenceActions } from '../list/renderers/event-nodes';
 import type { NrListMode } from '../shared/types';
 
 export function adaptAuthorInterestActionsCommand(
