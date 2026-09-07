@@ -17,6 +17,7 @@ import type {
 } from './commands/shared/types';
 import { buildNrPluginContextText } from './context';
 import { listNrAudienceReactions } from './db';
+import { describeEventImages } from './image-evaluation';
 import { fetchReferencedEvents } from './references';
 import { getNrSettings } from './settings';
 import type { NrRuntimeContext } from './types/adapter-params';
@@ -90,6 +91,14 @@ export async function classifyEventWithNrAi({
       })
     ).events;
 
+  const imageDescriptions = await describeEventImages({
+    db,
+    event,
+    settings,
+    agent,
+    abortSignal,
+  });
+
   const prompt = buildClassificationPrompt({
     event,
     instructions,
@@ -100,6 +109,7 @@ export async function classifyEventWithNrAi({
       cached: listNrAudienceReactions(db, event.id),
       current: audienceReactions,
     }),
+    imageDescriptions,
   });
 
   const result = await agent.run({

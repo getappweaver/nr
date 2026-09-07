@@ -5,6 +5,7 @@ import { authorInterestActionsDefinition } from './commands/author-interest-acti
 import { authorInterestRecordDefinition } from './commands/author-interest-record/definition';
 import { contextDefinition } from './commands/context/definition';
 import { fetchLatestDefinition } from './commands/fetch-latest/definition';
+import { imagesDefinition } from './commands/images/definition';
 import { interactionRecordDefinition } from './commands/interaction-record/definition';
 import { interestRecordDefinition } from './commands/interest-record/definition';
 import { listDefinition } from './commands/list/definition';
@@ -44,6 +45,7 @@ export const commandDefinition = (
     contextDefinition(prefix, alias),
     taxonomyDefinition(),
     fetchLatestDefinition(prefix, alias),
+    imagesDefinition(prefix, alias),
     interactionRecordDefinition(),
     interestRecordDefinition(),
     authorInterestActionsDefinition(),

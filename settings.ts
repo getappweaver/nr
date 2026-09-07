@@ -12,6 +12,8 @@ export type NrSignalReviewMode = 'ask' | 'always' | 'never';
 export type NrSettings = {
   backend: AgentBackendName | null;
   model: string | null;
+  imageBackend: AgentBackendName | null;
+  imageModel: string | null;
   instructions: string;
   eventSharePrefix: string;
   profileSharePrefix: string;
@@ -21,6 +23,10 @@ export type NrSettings = {
   alwaysResolveUnresolvedReferences: boolean;
   relayFetchConcurrency: number;
   aiEvaluationConcurrency: number;
+  evaluateImages: boolean;
+  maxImagesPerEvent: number;
+  maxImageBytes: number;
+  imageFetchTimeoutSec: number;
   archiveSignalReviewMode: NrSignalReviewMode;
   likeSignalReviewMode: NrSignalReviewMode;
   replySignalReviewMode: NrSignalReviewMode;
@@ -32,6 +38,10 @@ export const DEFAULT_NR_RELAY_FETCH_CONCURRENCY = 3;
 export const DEFAULT_NR_AI_EVALUATION_CONCURRENCY = 2;
 export const DEFAULT_NR_FILTER_TO_LATEST_FETCHED_SLOT_ON_OPEN = true;
 export const DEFAULT_NR_ALWAYS_RESOLVE_UNRESOLVED_REFERENCES = false;
+export const DEFAULT_NR_EVALUATE_IMAGES = false;
+export const DEFAULT_NR_MAX_IMAGES_PER_EVENT = 1;
+export const DEFAULT_NR_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+export const DEFAULT_NR_IMAGE_FETCH_TIMEOUT_SEC = 60;
 export const DEFAULT_NR_SIGNAL_REVIEW_MODE: NrSignalReviewMode = 'ask';
 
 export const DEFAULT_NR_CLASSIFICATION_INSTRUCTIONS = `Classify this Nostr event for a personal unread radar.
@@ -74,6 +84,8 @@ Guidelines:
 const SETTINGS_KEYS = {
   backend: 'backend',
   model: 'model',
+  imageBackend: 'image_backend',
+  imageModel: 'image_model',
   instructions: 'instructions',
   eventSharePrefix: 'event_share_prefix',
   profileSharePrefix: 'profile_share_prefix',
@@ -83,6 +95,10 @@ const SETTINGS_KEYS = {
   alwaysResolveUnresolvedReferences: 'always_resolve_unresolved_references',
   relayFetchConcurrency: 'relay_fetch_concurrency',
   aiEvaluationConcurrency: 'ai_evaluation_concurrency',
+  evaluateImages: 'evaluate_images',
+  maxImagesPerEvent: 'max_images_per_event',
+  maxImageBytes: 'max_image_bytes',
+  imageFetchTimeoutSec: 'image_fetch_timeout_sec',
   archiveSignalReviewMode: 'archive_signal_review_mode',
   likeSignalReviewMode: 'like_signal_review_mode',
   replySignalReviewMode: 'reply_signal_review_mode',
@@ -147,6 +163,30 @@ function aiEvaluationConcurrency(value: string | null): number {
     : DEFAULT_NR_AI_EVALUATION_CONCURRENCY;
 }
 
+function maxImagesPerEvent(value: string | null): number {
+  const parsed = value ? Number.parseInt(value, 10) : Number.NaN;
+
+  return Number.isInteger(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_NR_MAX_IMAGES_PER_EVENT;
+}
+
+function maxImageBytes(value: string | null): number {
+  const parsed = value ? Number.parseInt(value, 10) : Number.NaN;
+
+  return Number.isInteger(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_NR_MAX_IMAGE_BYTES;
+}
+
+function imageFetchTimeoutSec(value: string | null): number {
+  const parsed = value ? Number.parseInt(value, 10) : Number.NaN;
+
+  return Number.isInteger(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_NR_IMAGE_FETCH_TIMEOUT_SEC;
+}
+
 function booleanSetting(value: string | null, fallback: boolean): boolean {
   if (value === 'true') {
     return true;
@@ -178,6 +218,8 @@ export function getNrSettings(db: Database): NrSettings {
   return {
     backend: parseBackend(getSetting(db, SETTINGS_KEYS.backend)),
     model: getSetting(db, SETTINGS_KEYS.model),
+    imageBackend: parseBackend(getSetting(db, SETTINGS_KEYS.imageBackend)),
+    imageModel: getSetting(db, SETTINGS_KEYS.imageModel),
     instructions:
       getSetting(db, SETTINGS_KEYS.instructions) ??
       DEFAULT_NR_CLASSIFICATION_INSTRUCTIONS,
@@ -206,6 +248,17 @@ export function getNrSettings(db: Database): NrSettings {
     aiEvaluationConcurrency: aiEvaluationConcurrency(
       getSetting(db, SETTINGS_KEYS.aiEvaluationConcurrency),
     ),
+    evaluateImages: booleanSetting(
+      getSetting(db, SETTINGS_KEYS.evaluateImages),
+      DEFAULT_NR_EVALUATE_IMAGES,
+    ),
+    maxImagesPerEvent: maxImagesPerEvent(
+      getSetting(db, SETTINGS_KEYS.maxImagesPerEvent),
+    ),
+    maxImageBytes: maxImageBytes(getSetting(db, SETTINGS_KEYS.maxImageBytes)),
+    imageFetchTimeoutSec: imageFetchTimeoutSec(
+      getSetting(db, SETTINGS_KEYS.imageFetchTimeoutSec),
+    ),
     archiveSignalReviewMode: signalReviewMode(
       getSetting(db, SETTINGS_KEYS.archiveSignalReviewMode),
     ),
@@ -225,6 +278,8 @@ type SaveNrSettingsProps = {
   db: Database;
   backend: AgentBackendName | null;
   model: string | null;
+  imageBackend: AgentBackendName | null;
+  imageModel: string | null;
   instructions: string | null;
   eventSharePrefix: string;
   profileSharePrefix: string;
@@ -234,6 +289,10 @@ type SaveNrSettingsProps = {
   alwaysResolveUnresolvedReferences: boolean;
   relayFetchConcurrency: number;
   aiEvaluationConcurrency: number;
+  evaluateImages: boolean;
+  maxImagesPerEvent: number;
+  maxImageBytes: number;
+  imageFetchTimeoutSec: number;
   archiveSignalReviewMode: NrSignalReviewMode;
   likeSignalReviewMode: NrSignalReviewMode;
   replySignalReviewMode: NrSignalReviewMode;
@@ -244,6 +303,8 @@ export function saveNrSettings({
   db,
   backend,
   model,
+  imageBackend,
+  imageModel,
   instructions,
   eventSharePrefix,
   profileSharePrefix,
@@ -253,6 +314,10 @@ export function saveNrSettings({
   alwaysResolveUnresolvedReferences,
   relayFetchConcurrency,
   aiEvaluationConcurrency,
+  evaluateImages,
+  maxImagesPerEvent,
+  maxImageBytes,
+  imageFetchTimeoutSec,
   archiveSignalReviewMode,
   likeSignalReviewMode,
   replySignalReviewMode,
@@ -268,6 +333,18 @@ export function saveNrSettings({
     deleteSetting(db, SETTINGS_KEYS.model);
   } else {
     setSetting(db, SETTINGS_KEYS.model, model.trim());
+  }
+
+  if (imageBackend === null) {
+    deleteSetting(db, SETTINGS_KEYS.imageBackend);
+  } else {
+    setSetting(db, SETTINGS_KEYS.imageBackend, imageBackend);
+  }
+
+  if (imageModel === null || imageModel.trim().length === 0) {
+    deleteSetting(db, SETTINGS_KEYS.imageModel);
+  } else {
+    setSetting(db, SETTINGS_KEYS.imageModel, imageModel.trim());
   }
 
   if (instructions === null || instructions.trim().length === 0) {
@@ -322,6 +399,18 @@ export function saveNrSettings({
     String(aiEvaluationConcurrency),
   );
 
+  setSetting(db, SETTINGS_KEYS.evaluateImages, String(evaluateImages));
+
+  setSetting(db, SETTINGS_KEYS.maxImagesPerEvent, String(maxImagesPerEvent));
+
+  setSetting(db, SETTINGS_KEYS.maxImageBytes, String(maxImageBytes));
+
+  setSetting(
+    db,
+    SETTINGS_KEYS.imageFetchTimeoutSec,
+    String(imageFetchTimeoutSec),
+  );
+
   setSetting(
     db,
     SETTINGS_KEYS.archiveSignalReviewMode,
@@ -343,6 +432,8 @@ export function saveNrSettings({
 export function resetNrSettings(db: Database): NrSettings {
   deleteSetting(db, SETTINGS_KEYS.backend);
   deleteSetting(db, SETTINGS_KEYS.model);
+  deleteSetting(db, SETTINGS_KEYS.imageBackend);
+  deleteSetting(db, SETTINGS_KEYS.imageModel);
   deleteSetting(db, SETTINGS_KEYS.instructions);
   deleteSetting(db, SETTINGS_KEYS.eventSharePrefix);
   deleteSetting(db, SETTINGS_KEYS.profileSharePrefix);
@@ -352,12 +443,26 @@ export function resetNrSettings(db: Database): NrSettings {
   deleteSetting(db, SETTINGS_KEYS.alwaysResolveUnresolvedReferences);
   deleteSetting(db, SETTINGS_KEYS.relayFetchConcurrency);
   deleteSetting(db, SETTINGS_KEYS.aiEvaluationConcurrency);
+  deleteSetting(db, SETTINGS_KEYS.evaluateImages);
+  deleteSetting(db, SETTINGS_KEYS.maxImagesPerEvent);
+  deleteSetting(db, SETTINGS_KEYS.maxImageBytes);
+  deleteSetting(db, SETTINGS_KEYS.imageFetchTimeoutSec);
   deleteSetting(db, SETTINGS_KEYS.archiveSignalReviewMode);
   deleteSetting(db, SETTINGS_KEYS.likeSignalReviewMode);
   deleteSetting(db, SETTINGS_KEYS.replySignalReviewMode);
   deleteSetting(db, SETTINGS_KEYS.repostQuoteSignalReviewMode);
 
   return getNrSettings(db);
+}
+
+export function nrImageAgentSelection(settings: NrSettings): {
+  backend: AgentBackendName | null;
+  model: string | null;
+} {
+  return {
+    backend: settings.imageBackend ?? settings.backend,
+    model: settings.imageModel ?? settings.model,
+  };
 }
 
 type SaveNrSignalReviewModeProps = {

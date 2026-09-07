@@ -149,8 +149,10 @@ function signalReviewSelectNodes(
 function formatSettings(settings: ReturnType<typeof getNrSettings>): string {
   return [
     'Nostr radar settings:',
-    `Backend: ${settings.backend ?? '(default)'}`,
-    `Model: ${settings.model ?? '(default)'}`,
+    `AI Text backend: ${settings.backend ?? '(default)'}`,
+    `AI Text model: ${settings.model ?? '(default)'}`,
+    `AI Image backend: ${settings.imageBackend ?? '(AI Text)'}`,
+    `AI Image model: ${settings.imageModel ?? '(AI Text)'}`,
     `Event share URL: ${settings.eventSharePrefix}`,
     `Profile share URL: ${settings.profileSharePrefix}`,
     `Default language: ${settings.defaultLanguage ?? 'en'}`,
@@ -163,6 +165,10 @@ function formatSettings(settings: ReturnType<typeof getNrSettings>): string {
     }`,
     `Relay fetch concurrency: ${settings.relayFetchConcurrency}`,
     `AI evaluation concurrency: ${settings.aiEvaluationConcurrency}`,
+    `Evaluate images: ${settings.evaluateImages ? 'enabled' : 'disabled'}`,
+    `Max images per event: ${settings.maxImagesPerEvent}`,
+    `Max image size: ${(settings.maxImageBytes / (1024 * 1024)).toFixed(1)} MB`,
+    `Image fetch timeout: ${settings.imageFetchTimeoutSec}s`,
     '',
     'Signal review:',
     `Archive: ${SIGNAL_REVIEW_MODE_LABELS[settings.archiveSignalReviewMode]}`,
@@ -181,7 +187,10 @@ type RenderSettingsWebProps = {
   alias: string;
   settings: ReturnType<typeof getNrSettings>;
   defaults: ReturnType<NrCommandAdapterParams['agent']['getDefaults']>;
-  modelChoices: string[];
+  textModelChoices: string[];
+  imageModelChoices: string[];
+  textEffectiveModel: string;
+  imageFallbackModel: string;
   agentOnly: boolean;
   message: string | null;
   scheduler: SchedulerSettingsState | null;
@@ -240,9 +249,15 @@ async function renderSettingsResult({
   message,
   schedulerSetupNeeded,
 }: RenderSettingsResultProps): Promise<WebNodeRoot> {
-  const [modelChoices, scheduler] = await Promise.all([
+  const defaults = params.storedCtx.agent.getDefaults();
+  const imageBackend = settings.imageBackend ?? settings.backend;
+
+  const [textModelChoices, imageModelChoices, scheduler] = await Promise.all([
     params.storedCtx.agent
       .getAvailableModels({ backend: settings.backend })
+      .catch(() => []),
+    params.storedCtx.agent
+      .getAvailableModels({ backend: imageBackend })
       .catch(() => []),
     loadSchedulerSettingsState(params),
   ]);
@@ -250,8 +265,21 @@ async function renderSettingsResult({
   return renderSettingsWeb({
     alias: params.alias,
     settings,
-    defaults: params.storedCtx.agent.getDefaults(),
-    modelChoices,
+    defaults,
+    textModelChoices,
+    imageModelChoices,
+    textEffectiveModel: params.storedCtx.agent.getEffectiveModel({
+      backend: settings.backend,
+      model: settings.model,
+      mode: null,
+      workspaceTarget: null,
+    }),
+    imageFallbackModel: params.storedCtx.agent.getEffectiveModel({
+      backend: imageBackend,
+      model: settings.model,
+      mode: null,
+      workspaceTarget: null,
+    }),
     agentOnly: parseBooleanOption(params.parsed.options.agent),
     message,
     scheduler,
@@ -263,17 +291,33 @@ function renderSettingsWeb({
   alias,
   settings,
   defaults,
-  modelChoices,
+  textModelChoices,
+  imageModelChoices,
+  textEffectiveModel,
+  imageFallbackModel,
   agentOnly,
   message,
   scheduler,
   schedulerSetupNeeded,
 }: RenderSettingsWebProps): WebNodeRoot {
   if (agentOnly) {
-    const modelCatalog =
-      settings.model && !modelChoices.includes(settings.model)
-        ? [settings.model, ...modelChoices]
-        : modelChoices;
+    const textModelCatalog =
+      settings.model && !textModelChoices.includes(settings.model)
+        ? [settings.model, ...textModelChoices]
+        : textModelChoices;
+
+    const imageModelCatalog =
+      settings.imageModel && !imageModelChoices.includes(settings.imageModel)
+        ? [settings.imageModel, ...imageModelChoices]
+        : imageModelChoices;
+
+    const imageBackendDefaultLabel = settings.backend
+      ? `current Text AI (${settings.backend ?? defaults.backend})`
+      : `current (${defaults.backend})`;
+
+    const imageModelDefaultLabel = settings.model
+      ? `Clear / use current Text AI (${imageFallbackModel})`
+      : `Clear / use current (${imageFallbackModel})`;
 
     return {
       kind: 'ui',
@@ -287,7 +331,12 @@ function renderSettingsWeb({
           'form',
           {
             className: 'web-form web-form--stacked',
-            formOptionFieldNames: ['backend', 'model'],
+            formOptionFieldNames: [
+              'backend',
+              'model',
+              'image_backend',
+              'image_model',
+            ],
             action: {
               type: 'command',
               command: alias,
@@ -304,7 +353,7 @@ function renderSettingsWeb({
               text('Nostr radar AI settings'),
             ]),
             el('text', { weight: 'semibold', size: 'sm' }, [
-              text('AI backend'),
+              text('AI Text backend'),
             ]),
             el(
               'select',
@@ -320,15 +369,48 @@ function renderSettingsWeb({
               },
               [],
             ),
-            el('text', { weight: 'semibold', size: 'sm' }, [text('AI model')]),
+            el('text', { weight: 'semibold', size: 'sm' }, [
+              text('AI Text model'),
+            ]),
             el(
               'textField',
               {
                 formFieldName: 'model',
-                inputPlaceholder: defaults.effectiveModel,
+                inputPlaceholder: textEffectiveModel,
                 value: settings.model ?? '',
-                choices: ['reset', ...modelCatalog],
+                choices: ['reset', ...textModelCatalog],
                 choiceLabels: { reset: 'Clear / use current' },
+              },
+              [],
+            ),
+            el('text', { weight: 'semibold', size: 'sm' }, [
+              text('AI Image backend'),
+            ]),
+            el(
+              'select',
+              {
+                formFieldName: 'image_backend',
+                value: settings.imageBackend ?? 'default',
+                choices: ['default', 'cursor', 'opencode'],
+                choiceLabels: {
+                  default: imageBackendDefaultLabel,
+                  cursor: 'cursor',
+                  opencode: 'opencode',
+                },
+              },
+              [],
+            ),
+            el('text', { weight: 'semibold', size: 'sm' }, [
+              text('AI Image model'),
+            ]),
+            el(
+              'textField',
+              {
+                formFieldName: 'image_model',
+                inputPlaceholder: imageFallbackModel,
+                value: settings.imageModel ?? '',
+                choices: ['reset', ...imageModelCatalog],
+                choiceLabels: { reset: imageModelDefaultLabel },
               },
               [],
             ),
@@ -364,6 +446,10 @@ function renderSettingsWeb({
             'always_resolve_unresolved_references',
             'relay_fetch_concurrency',
             'ai_evaluation_concurrency',
+            'evaluate_images',
+            'max_images_per_event',
+            'max_image_mb',
+            'image_fetch_timeout_sec',
             'archive_signal_review_mode',
             'like_signal_review_mode',
             'reply_signal_review_mode',
@@ -382,211 +468,301 @@ function renderSettingsWeb({
         },
         [
           el('text', { weight: 'semibold' }, [text('Nostr radar settings')]),
-          el('text', { weight: 'semibold', size: 'sm' }, [
-            text('Signal review'),
-          ]),
-          ...signalReviewSelectNodes(settings),
-          el('text', { weight: 'semibold', size: 'sm' }, [
-            text('Concurrent AI evaluators'),
-          ]),
-          el(
-            'textField',
-            {
-              formFieldName: 'ai_evaluation_concurrency',
-              inputPlaceholder: '2',
-              value: String(settings.aiEvaluationConcurrency),
-            },
-            [],
-          ),
-          el('text', { weight: 'semibold', size: 'sm' }, [
-            text('Classification instructions'),
-          ]),
-          el(
-            'textArea',
-            {
-              formFieldName: 'instructions',
-              inputPlaceholder: 'classification instructions',
-              value: settings.instructions,
-              maxRows: 14,
-            },
-            [],
-          ),
-          el('text', { weight: 'semibold', size: 'sm' }, [
-            text('Event share URL'),
-          ]),
-          el(
-            'textField',
-            {
-              formFieldName: 'event_share_prefix',
-              inputPlaceholder:
-                'nostr:// or https://jumble.social/notes/[nevent]',
-              value: settings.eventSharePrefix,
-            },
-            [],
-          ),
-          el('text', { weight: 'semibold', size: 'sm' }, [
-            text('Profile share URL'),
-          ]),
-          el(
-            'textField',
-            {
-              formFieldName: 'profile_share_prefix',
-              inputPlaceholder:
-                'nostr:// or https://jumble.social/users/[nprofile]',
-              value: settings.profileSharePrefix,
-            },
-            [],
-          ),
-          el('text', { weight: 'semibold', size: 'sm' }, [
-            text('Default language'),
-          ]),
-          el(
-            'textField',
-            {
-              formFieldName: 'default_language',
-              inputPlaceholder: 'en (reset = English)',
-              value: settings.defaultLanguage ?? '',
-              choices: ['reset', 'en'],
-              choiceLabels: { reset: 'Clear / use English' },
-            },
-            [],
-          ),
-          el('text', { weight: 'semibold', size: 'sm' }, [
-            text('Translation target language'),
-          ]),
-          el(
-            'textField',
-            {
-              formFieldName: 'translation_target_language',
-              inputPlaceholder: 'en (reset = English)',
-              value: settings.translationTargetLanguage ?? '',
-              choices: ['reset', 'en'],
-              choiceLabels: { reset: 'Clear / use English' },
-            },
-            [],
-          ),
-          el('text', { weight: 'semibold', size: 'sm' }, [text('Scheduling')]),
-          el('row', { gap: 'xs', itemAlign: 'center' }, [
-            el(
-              'checkbox',
-              {
-                formFieldName: 'hourly_scheduler',
-                value: 'true',
-                checked: scheduler !== null,
-                disabled: scheduler !== null,
-                className: 'web-checkbox--retro',
-              },
-              [],
-            ),
-            text('Create hourly scheduler to fetch and evaluate'),
-          ]),
-          ...(scheduler
-            ? [
-                el('text', { tone: 'muted', size: 'sm' }, [
-                  text(
-                    `Status: ${scheduler.status}${scheduler.enabled ? ' · enabled' : ''} · ${scheduler.scheduleDescription}`,
+          el('tabs', { defaultActiveTabId: 'nr-settings-ai' }, [
+            el('tabPanel', { id: 'nr-settings-ai', label: 'AI' }, [
+              el('text', { weight: 'semibold', size: 'sm' }, [
+                text('Classification instructions'),
+              ]),
+              el(
+                'textArea',
+                {
+                  formFieldName: 'instructions',
+                  inputPlaceholder: 'classification instructions',
+                  value: settings.instructions,
+                  maxRows: 14,
+                },
+                [],
+              ),
+              el('text', { weight: 'semibold', size: 'sm' }, [
+                text('Concurrent AI evaluators'),
+              ]),
+              el(
+                'textField',
+                {
+                  formFieldName: 'ai_evaluation_concurrency',
+                  inputPlaceholder: '2',
+                  value: String(settings.aiEvaluationConcurrency),
+                },
+                [],
+              ),
+              el('text', { weight: 'semibold', size: 'sm' }, [
+                text('Evaluate images'),
+              ]),
+              el(
+                'select',
+                {
+                  formFieldName: 'evaluate_images',
+                  value: settings.evaluateImages ? 'enabled' : 'disabled',
+                  choices: ['enabled', 'disabled'],
+                  choiceLabels: {
+                    enabled: 'Enabled',
+                    disabled: 'Disabled',
+                  },
+                },
+                [],
+              ),
+              el('text', { weight: 'semibold', size: 'sm' }, [
+                text('Max images per event'),
+              ]),
+              el(
+                'textField',
+                {
+                  formFieldName: 'max_images_per_event',
+                  inputPlaceholder: '1',
+                  value: String(settings.maxImagesPerEvent),
+                },
+                [],
+              ),
+              el('text', { weight: 'semibold', size: 'sm' }, [
+                text('Max image size (MB)'),
+              ]),
+              el(
+                'textField',
+                {
+                  formFieldName: 'max_image_mb',
+                  inputPlaceholder: '5',
+                  value: String(
+                    Math.round((settings.maxImageBytes / (1024 * 1024)) * 10) /
+                      10,
                   ),
+                },
+                [],
+              ),
+              el('text', { weight: 'semibold', size: 'sm' }, [
+                text('Image fetch timeout (sec)'),
+              ]),
+              el(
+                'textField',
+                {
+                  formFieldName: 'image_fetch_timeout_sec',
+                  inputPlaceholder: '60',
+                  value: String(settings.imageFetchTimeoutSec),
+                },
+                [],
+              ),
+              el(
+                'button',
+                {
+                  label: 'Backend / model…',
+                  action: {
+                    type: 'command',
+                    command: alias,
+                    subcommand: 'settings',
+                    arguments: {},
+                    options: { agent: true },
+                    surface: 'modal',
+                    modalTitle: 'Nostr radar AI settings',
+                    recordInTimeline: false,
+                  },
+                },
+                [],
+              ),
+            ]),
+            el('tabPanel', { id: 'nr-settings-signals', label: 'Signals' }, [
+              el('text', { weight: 'semibold', size: 'sm' }, [
+                text('Signal review'),
+              ]),
+              ...signalReviewSelectNodes(settings),
+            ]),
+            el('tabPanel', { id: 'nr-settings-display', label: 'Display' }, [
+              el('text', { weight: 'semibold', size: 'sm' }, [
+                text('Event share URL'),
+              ]),
+              el(
+                'textField',
+                {
+                  formFieldName: 'event_share_prefix',
+                  inputPlaceholder:
+                    'nostr:// or https://jumble.social/notes/[nevent]',
+                  value: settings.eventSharePrefix,
+                },
+                [],
+              ),
+              el('text', { weight: 'semibold', size: 'sm' }, [
+                text('Profile share URL'),
+              ]),
+              el(
+                'textField',
+                {
+                  formFieldName: 'profile_share_prefix',
+                  inputPlaceholder:
+                    'nostr:// or https://jumble.social/users/[nprofile]',
+                  value: settings.profileSharePrefix,
+                },
+                [],
+              ),
+              el('text', { weight: 'semibold', size: 'sm' }, [
+                text('Default language'),
+              ]),
+              el(
+                'textField',
+                {
+                  formFieldName: 'default_language',
+                  inputPlaceholder: 'en (reset = English)',
+                  value: settings.defaultLanguage ?? '',
+                  choices: ['reset', 'en'],
+                  choiceLabels: { reset: 'Clear / use English' },
+                },
+                [],
+              ),
+              el('text', { weight: 'semibold', size: 'sm' }, [
+                text('Translation target language'),
+              ]),
+              el(
+                'textField',
+                {
+                  formFieldName: 'translation_target_language',
+                  inputPlaceholder: 'en (reset = English)',
+                  value: settings.translationTargetLanguage ?? '',
+                  choices: ['reset', 'en'],
+                  choiceLabels: { reset: 'Clear / use English' },
+                },
+                [],
+              ),
+              el('text', { weight: 'semibold', size: 'sm' }, [
+                text('Initial time filter'),
+              ]),
+              el(
+                'select',
+                {
+                  formFieldName: 'filter_to_latest_fetched_slot_on_open',
+                  value: settings.filterToLatestFetchedSlotOnOpen
+                    ? 'enabled'
+                    : 'disabled',
+                  choices: ['enabled', 'disabled'],
+                  choiceLabels: {
+                    enabled: 'Latest fetched hour',
+                    disabled: 'No initial time filter',
+                  },
+                },
+                [],
+              ),
+              el('text', { weight: 'semibold', size: 'sm' }, [
+                text('Unresolved references'),
+              ]),
+              el(
+                'select',
+                {
+                  formFieldName: 'always_resolve_unresolved_references',
+                  value: settings.alwaysResolveUnresolvedReferences
+                    ? 'enabled'
+                    : 'disabled',
+                  choices: ['enabled', 'disabled'],
+                  choiceLabels: {
+                    enabled: 'Always resolve automatically',
+                    disabled: 'Show on demand',
+                  },
+                },
+                [],
+              ),
+            ]),
+            el(
+              'tabPanel',
+              { id: 'nr-settings-fetch-schedule', label: 'Fetch & Schedule' },
+              [
+                el('text', { weight: 'semibold', size: 'sm' }, [
+                  text('Concurrent relay groups'),
                 ]),
-                ...(scheduler.status === 'unavailable'
-                  ? []
-                  : [
+                el(
+                  'textField',
+                  {
+                    formFieldName: 'relay_fetch_concurrency',
+                    inputPlaceholder: '3',
+                    value: String(settings.relayFetchConcurrency),
+                  },
+                  [],
+                ),
+                el('text', { weight: 'semibold', size: 'sm' }, [
+                  text('Scheduling'),
+                ]),
+                el('row', { gap: 'xs', itemAlign: 'center' }, [
+                  el(
+                    'checkbox',
+                    {
+                      formFieldName: 'hourly_scheduler',
+                      value: 'true',
+                      checked: scheduler !== null,
+                      disabled: scheduler !== null,
+                      className: 'web-checkbox--retro',
+                    },
+                    [],
+                  ),
+                  text('Create hourly scheduler to fetch and evaluate'),
+                ]),
+                ...(scheduler
+                  ? [
+                      el('text', { tone: 'muted', size: 'sm' }, [
+                        text(
+                          `Status: ${scheduler.status}${scheduler.enabled ? ' · enabled' : ''} · ${scheduler.scheduleDescription}`,
+                        ),
+                      ]),
+                      ...(scheduler.status === 'unavailable'
+                        ? []
+                        : [
+                            el(
+                              'button',
+                              {
+                                label:
+                                  scheduler.status === 'draft'
+                                    ? 'Review scheduled job'
+                                    : 'View scheduled job',
+                                action: {
+                                  type: 'capability',
+                                  operation: SchedulerV1.operations.show.id,
+                                  input: {
+                                    resourceId: scheduler.resource.resourceId,
+                                  },
+                                  consumerAlias: alias,
+                                  providerId: scheduler.resource.providerId,
+                                  selection: 'auto',
+                                  surface: 'modal',
+                                  modalTitle: 'Scheduled Nostr Radar job',
+                                },
+                              },
+                              [],
+                            ),
+                          ]),
+                    ]
+                  : []),
+                ...(schedulerSetupNeeded
+                  ? [
+                      el('text', { tone: 'warning', size: 'sm' }, [
+                        text(
+                          'Choose or install a scheduler provider to continue.',
+                        ),
+                      ]),
                       el(
                         'button',
                         {
-                          label:
-                            scheduler.status === 'draft'
-                              ? 'Review scheduled job'
-                              : 'View scheduled job',
+                          label: 'Configure scheduler',
                           action: {
-                            type: 'capability',
-                            operation: SchedulerV1.operations.show.id,
-                            input: {
-                              resourceId: scheduler.resource.resourceId,
-                            },
-                            consumerAlias: alias,
-                            providerId: scheduler.resource.providerId,
-                            selection: 'auto',
+                            type: 'command',
+                            command: alias,
+                            subcommand: 'schedule',
+                            arguments: {},
+                            options: {},
                             surface: 'modal',
-                            modalTitle: 'Scheduled Nostr Radar job',
+                            modalTitle: 'Nostr radar schedule',
+                            recordInTimeline: false,
                           },
                         },
                         [],
                       ),
-                    ]),
-              ]
-            : []),
-          ...(schedulerSetupNeeded
-            ? [
-                el('text', { tone: 'warning', size: 'sm' }, [
-                  text('Choose or install a scheduler provider to continue.'),
-                ]),
-                el(
-                  'button',
-                  {
-                    label: 'Configure scheduler',
-                    action: {
-                      type: 'command',
-                      command: alias,
-                      subcommand: 'schedule',
-                      arguments: {},
-                      options: {},
-                      surface: 'modal',
-                      modalTitle: 'Nostr radar schedule',
-                      recordInTimeline: false,
-                    },
-                  },
-                  [],
-                ),
-              ]
-            : []),
-          el('text', { weight: 'semibold', size: 'sm' }, [
-            text('Initial time filter'),
+                    ]
+                  : []),
+              ],
+            ),
           ]),
-          el(
-            'select',
-            {
-              formFieldName: 'filter_to_latest_fetched_slot_on_open',
-              value: settings.filterToLatestFetchedSlotOnOpen
-                ? 'enabled'
-                : 'disabled',
-              choices: ['enabled', 'disabled'],
-              choiceLabels: {
-                enabled: 'Latest fetched hour',
-                disabled: 'No initial time filter',
-              },
-            },
-            [],
-          ),
-          el('text', { weight: 'semibold', size: 'sm' }, [
-            text('Unresolved references'),
-          ]),
-          el(
-            'select',
-            {
-              formFieldName: 'always_resolve_unresolved_references',
-              value: settings.alwaysResolveUnresolvedReferences
-                ? 'enabled'
-                : 'disabled',
-              choices: ['enabled', 'disabled'],
-              choiceLabels: {
-                enabled: 'Always resolve automatically',
-                disabled: 'Show on demand',
-              },
-            },
-            [],
-          ),
-          el('text', { weight: 'semibold', size: 'sm' }, [
-            text('Concurrent relay groups'),
-          ]),
-          el(
-            'textField',
-            {
-              formFieldName: 'relay_fetch_concurrency',
-              inputPlaceholder: '3',
-              value: String(settings.relayFetchConcurrency),
-            },
-            [],
-          ),
           el('row', { className: 'web-form__actions', gap: 'xs' }, [
             el('button', { label: 'Save', htmlType: 'submit' }, []),
             el(
@@ -639,6 +815,14 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
   const modelValue = asOptionalStringOverride(params.parsed.options.model);
   const model = modelValue === 'reset' ? null : modelValue;
 
+  const imageBackend = parseBackend(params.parsed.options.image_backend);
+
+  const imageModelValue = asOptionalStringOverride(
+    params.parsed.options.image_model,
+  );
+
+  const imageModel = imageModelValue === 'reset' ? null : imageModelValue;
+
   const instructions = asOptionalStringOverride(
     params.parsed.options.instructions,
   );
@@ -687,6 +871,20 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
     params.parsed.options.always_resolve_unresolved_references,
   );
 
+  const evaluateImages = parseEnabledSetting(
+    params.parsed.options.evaluate_images,
+  );
+
+  const maxImagesPerEvent = parsePositiveInteger(
+    params.parsed.options.max_images_per_event,
+  );
+
+  const maxImageMb = parsePositiveInteger(params.parsed.options.max_image_mb);
+
+  const imageFetchTimeoutSec = parsePositiveInteger(
+    params.parsed.options.image_fetch_timeout_sec,
+  );
+
   const archiveSignalReviewMode = parseSignalReviewMode(
     params.parsed.options.archive_signal_review_mode,
     'Archive signal review mode',
@@ -710,6 +908,8 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
   const hasUpdates =
     backend !== undefined ||
     model !== undefined ||
+    imageBackend !== undefined ||
+    imageModel !== undefined ||
     instructions !== undefined ||
     eventSharePrefix !== undefined ||
     profileSharePrefix !== undefined ||
@@ -720,6 +920,10 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
     hourlySchedulerRequested ||
     relayFetchConcurrency !== undefined ||
     aiEvaluationConcurrency !== undefined ||
+    evaluateImages !== undefined ||
+    maxImagesPerEvent !== undefined ||
+    maxImageMb !== undefined ||
+    imageFetchTimeoutSec !== undefined ||
     archiveSignalReviewMode !== undefined ||
     likeSignalReviewMode !== undefined ||
     replySignalReviewMode !== undefined ||
@@ -746,6 +950,9 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
     db: params.db,
     backend: backend === undefined ? current.backend : backend,
     model: model === undefined ? current.model : model,
+    imageBackend:
+      imageBackend === undefined ? current.imageBackend : imageBackend,
+    imageModel: imageModel === undefined ? current.imageModel : imageModel,
     instructions:
       instructions === undefined ? current.instructions : instructions,
     eventSharePrefix:
@@ -772,6 +979,13 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
       relayFetchConcurrency ?? current.relayFetchConcurrency,
     aiEvaluationConcurrency:
       aiEvaluationConcurrency ?? current.aiEvaluationConcurrency,
+    evaluateImages: evaluateImages ?? current.evaluateImages,
+    maxImagesPerEvent: maxImagesPerEvent ?? current.maxImagesPerEvent,
+    maxImageBytes:
+      maxImageMb === undefined
+        ? current.maxImageBytes
+        : maxImageMb * 1024 * 1024,
+    imageFetchTimeoutSec: imageFetchTimeoutSec ?? current.imageFetchTimeoutSec,
     archiveSignalReviewMode:
       archiveSignalReviewMode ?? current.archiveSignalReviewMode,
     likeSignalReviewMode: likeSignalReviewMode ?? current.likeSignalReviewMode,

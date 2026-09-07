@@ -19,6 +19,7 @@ import { adaptContextCommand } from './commands/context/adapter';
 import { adaptFetchLatestCommand } from './commands/fetch-latest/adapter';
 import { adaptHelpCommand } from './commands/help/adapter';
 import { getNrCommandDefinition } from './commands/help/module';
+import { adaptImagesCommand } from './commands/images/adapter';
 import { adaptInteractionRecordCommand } from './commands/interaction-record/adapter';
 import { adaptInterestRecordCommand } from './commands/interest-record/adapter';
 import { adaptListCommand } from './commands/list/adapter';
@@ -54,6 +55,7 @@ type NrSubcommand =
   | 'taxonomy'
   | 'fetch-latest'
   | 'latest'
+  | 'images'
   | 'interaction-record'
   | 'interest-record'
   | 'author-interest-actions'
@@ -89,6 +91,7 @@ const subcommandAdapters: Record<NrSubcommand, NrCommandAdapter> = {
   taxonomy: adaptTaxonomyCommand,
   'fetch-latest': adaptFetchLatestCommand,
   latest: adaptFetchLatestCommand,
+  images: adaptImagesCommand,
   'interaction-record': adaptInteractionRecordCommand,
   'interest-record': adaptInterestRecordCommand,
   'author-interest-actions': adaptAuthorInterestActionsCommand,
@@ -134,6 +137,7 @@ function isNrSubcommand(value: string): value is NrSubcommand {
     value === 'taxonomy' ||
     value === 'fetch-latest' ||
     value === 'latest' ||
+    value === 'images' ||
     value === 'interaction-record' ||
     value === 'interest-record' ||
     value === 'author-interest-actions' ||
