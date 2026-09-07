@@ -75,6 +75,13 @@ export const markDefinition = (
       kind: 'string',
       required: false,
     },
+    {
+      name: 'event_ids',
+      flag: '--event-ids',
+      summary: 'Internal comma-separated event IDs to mark together.',
+      kind: 'string',
+      required: false,
+    },
   ],
   examples: [
     `${prefix}${alias} mark <event_id> --read`,

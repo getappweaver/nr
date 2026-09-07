@@ -186,6 +186,10 @@ export function renderNrListParseSingleWeb({
                     settings.alwaysResolveUnresolvedReferences,
                   mode: 'timeline',
                   renderScope: 'parse-single',
+                  archivedIds: new Set(
+                    event.archived_at !== null ? [event.id] : [],
+                  ),
+                  evaluatedImageCounts: {},
                 }),
               ],
             },

@@ -23,6 +23,10 @@ export function forYouNodes({
   resolveReferencesAutomatically,
   mode,
   selectedTimeRanges,
+  archivedIds,
+  evaluatedImageCounts,
+  followedPubkeys,
+  conversationContextEvents,
 }: ListModeNodesProps): WebNode[] {
   return [
     ...groupEventNodes({
@@ -42,6 +46,10 @@ export function forYouNodes({
       resolveReferencesAutomatically,
       mode,
       renderScope: 'for-you',
+      archivedIds,
+      evaluatedImageCounts,
+      followedPubkeys,
+      conversationContextEvents,
     }),
     el(
       'treeEmpty',

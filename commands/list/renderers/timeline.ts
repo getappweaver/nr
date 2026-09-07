@@ -21,6 +21,10 @@ export function timelineNodes({
   resolveReferencesAutomatically,
   mode,
   selectedTimeRanges,
+  archivedIds,
+  evaluatedImageCounts,
+  followedPubkeys,
+  conversationContextEvents,
 }: ListModeNodesProps): WebNode[] {
   return [
     sectionNode({
@@ -42,6 +46,10 @@ export function timelineNodes({
       resolveReferencesAutomatically,
       mode,
       selectedTimeRanges,
+      archivedIds,
+      evaluatedImageCounts,
+      followedPubkeys,
+      conversationContextEvents,
     }),
     sectionNode({
       alias,
@@ -62,6 +70,10 @@ export function timelineNodes({
       resolveReferencesAutomatically,
       mode,
       selectedTimeRanges,
+      archivedIds,
+      evaluatedImageCounts,
+      followedPubkeys,
+      conversationContextEvents,
     }),
     sectionNode({
       alias,
@@ -82,6 +94,10 @@ export function timelineNodes({
       resolveReferencesAutomatically,
       mode,
       selectedTimeRanges,
+      archivedIds,
+      evaluatedImageCounts,
+      followedPubkeys,
+      conversationContextEvents,
     }),
   ];
 }

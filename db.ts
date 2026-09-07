@@ -6,6 +6,7 @@ import { join } from 'path';
 
 import { Database, type Database as DatabaseType } from 'bun:sqlite';
 
+import { parseEventReferences } from '@src/nostr/event-references';
 import type { NostrResolutionService } from '@src/nostr/resolution-service';
 
 import { classifyEvent } from './classifier';
@@ -51,7 +52,6 @@ import type {
 import { seedNostrEventsOrThrow } from './nostr-resolution';
 import { extractEventReferences } from './references';
 import { createNrSettingsTable, getNrSettings } from './settings';
-import { extractNip10References } from './thread-context';
 
 type EventRow = {
   id: string;
@@ -657,6 +657,13 @@ export function createNrTable(db: DatabaseType): void {
   `);
 
   db.run(`
+    DELETE FROM nr_activity_targets
+    WHERE activity_event_id IN (
+      SELECT id FROM nr_events WHERE kind NOT IN (6, 7, 16)
+    )
+  `);
+
+  db.run(`
     CREATE INDEX IF NOT EXISTS idx_nr_interactions_target
     ON nr_interactions(target_event_id)
   `);
@@ -693,6 +700,31 @@ export function createNrTable(db: DatabaseType): void {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS nr_image_cache (
+      image_hash   TEXT    PRIMARY KEY,
+      mime         TEXT    NOT NULL,
+      byte_size    INTEGER NOT NULL,
+      description  TEXT    NOT NULL,
+      model        TEXT    NOT NULL,
+      evaluated_at INTEGER NOT NULL
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS nr_event_images (
+      event_id   TEXT NOT NULL REFERENCES nr_events(id) ON DELETE CASCADE,
+      image_hash TEXT NOT NULL REFERENCES nr_image_cache(image_hash) ON DELETE CASCADE,
+      source_url TEXT NOT NULL,
+      PRIMARY KEY (event_id, image_hash)
+    )
+  `);
+
+  db.run(`
+    CREATE INDEX IF NOT EXISTS idx_nr_event_images_event
+    ON nr_event_images(event_id)
   `);
 
   db.run(`
@@ -1553,6 +1585,197 @@ export function getNrAuthorPreference({
   return row ? rowToNrAuthorPreference(row) : null;
 }
 
+export type NrImageCacheEntry = {
+  imageHash: string;
+  mime: string;
+  byteSize: number;
+  description: string;
+  model: string;
+  evaluatedAt: number;
+};
+
+export type NrEventImage = {
+  eventId: string;
+  imageHash: string;
+  sourceUrl: string;
+};
+
+type SaveNrImageCacheProps = {
+  db: DatabaseType;
+  imageHash: string;
+  mime: string;
+  byteSize: number;
+  description: string;
+  model: string;
+};
+
+export function getNrImageCache(
+  db: DatabaseType,
+  imageHash: string,
+): NrImageCacheEntry | null {
+  const row = db
+    .prepare(
+      `SELECT image_hash, mime, byte_size, description, model, evaluated_at
+       FROM nr_image_cache WHERE image_hash = ?`,
+    )
+    .get(imageHash) as {
+    image_hash: string;
+    mime: string;
+    byte_size: number;
+    description: string;
+    model: string;
+    evaluated_at: number;
+  } | null;
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    imageHash: row.image_hash,
+    mime: row.mime,
+    byteSize: row.byte_size,
+    description: row.description,
+    model: row.model,
+    evaluatedAt: row.evaluated_at,
+  };
+}
+
+export function saveNrImageCache({
+  db,
+  imageHash,
+  mime,
+  byteSize,
+  description,
+  model,
+}: SaveNrImageCacheProps): NrImageCacheEntry {
+  const now = Math.floor(Date.now() / 1000);
+
+  db.run(
+    `INSERT INTO nr_image_cache (image_hash, mime, byte_size, description, model, evaluated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(image_hash) DO UPDATE SET
+       mime = excluded.mime,
+       byte_size = excluded.byte_size,
+       description = excluded.description,
+       model = excluded.model,
+       evaluated_at = excluded.evaluated_at`,
+    [imageHash, mime, byteSize, description, model, now],
+  );
+
+  return {
+    imageHash,
+    mime,
+    byteSize,
+    description,
+    model,
+    evaluatedAt: now,
+  };
+}
+
+type SaveNrEventImageProps = {
+  db: DatabaseType;
+  eventId: string;
+  imageHash: string;
+  sourceUrl: string;
+};
+
+export function saveNrEventImage({
+  db,
+  eventId,
+  imageHash,
+  sourceUrl,
+}: SaveNrEventImageProps): void {
+  db.run(
+    `INSERT OR IGNORE INTO nr_event_images (event_id, image_hash, source_url)
+     VALUES (?, ?, ?)`,
+    [eventId, imageHash, sourceUrl],
+  );
+}
+
+export function listNrEventImages(
+  db: DatabaseType,
+  eventId: string,
+): NrEventImage[] {
+  const rows = db
+    .prepare(
+      `SELECT event_id, image_hash, source_url
+       FROM nr_event_images WHERE event_id = ? ORDER BY image_hash ASC`,
+    )
+    .all(eventId) as {
+    event_id: string;
+    image_hash: string;
+    source_url: string;
+  }[];
+
+  return rows.map((row) => ({
+    eventId: row.event_id,
+    imageHash: row.image_hash,
+    sourceUrl: row.source_url,
+  }));
+}
+
+export type NrEventImageEvaluation = {
+  eventId: string;
+  imageHash: string;
+  sourceUrl: string;
+  mime: string;
+  byteSize: number;
+  description: string;
+  model: string;
+  evaluatedAt: number;
+};
+
+export function listNrEventImageEvaluations(
+  db: DatabaseType,
+  eventId: string,
+): NrEventImageEvaluation[] {
+  const rows = db
+    .prepare(
+      `SELECT ei.event_id, ei.image_hash, ei.source_url,
+              c.mime, c.byte_size, c.description, c.model, c.evaluated_at
+       FROM nr_event_images ei
+       JOIN nr_image_cache c ON c.image_hash = ei.image_hash
+       WHERE ei.event_id = ? ORDER BY ei.image_hash ASC`,
+    )
+    .all(eventId) as {
+    event_id: string;
+    image_hash: string;
+    source_url: string;
+    mime: string;
+    byte_size: number;
+    description: string;
+    model: string;
+    evaluated_at: number;
+  }[];
+
+  return rows.map((row) => ({
+    eventId: row.event_id,
+    imageHash: row.image_hash,
+    sourceUrl: row.source_url,
+    mime: row.mime,
+    byteSize: row.byte_size,
+    description: row.description,
+    model: row.model,
+    evaluatedAt: row.evaluated_at,
+  }));
+}
+
+export function countNrEvaluatedImagesByEvent(
+  db: DatabaseType,
+): Record<string, number> {
+  const rows = db
+    .prepare(
+      `SELECT ei.event_id AS event_id, COUNT(*) AS count
+       FROM nr_event_images ei
+       JOIN nr_image_cache c ON c.image_hash = ei.image_hash
+       GROUP BY ei.event_id`,
+    )
+    .all() as Array<{ event_id: string; count: number }>;
+
+  return Object.fromEntries(rows.map((row) => [row.event_id, row.count]));
+}
+
 export function listNrTaxonomyTerms(db: DatabaseType): NrTaxonomyTerm[] {
   const rows = db
     .prepare(
@@ -2121,16 +2344,16 @@ export async function parseAndStoreEvent({
     ],
   );
 
-  if (event.kind !== 1 && event.kind !== 30023) {
+  db.run('DELETE FROM nr_activity_targets WHERE activity_event_id = ?', [
+    event.id,
+  ]);
+
+  if (event.kind === 6 || event.kind === 7 || event.kind === 16) {
     const targetIds = [
       ...new Set(
         [...threadContext, ...referencedEvents].map((item) => item.id),
       ),
     ];
-
-    db.run('DELETE FROM nr_activity_targets WHERE activity_event_id = ?', [
-      event.id,
-    ]);
 
     const insertTarget = db.prepare(
       'INSERT OR IGNORE INTO nr_activity_targets (activity_event_id, target_event_id) VALUES (?, ?)',
@@ -2227,7 +2450,7 @@ type MarkEventIdsStateProps = {
 
 const MARK_EVENT_IDS_CHUNK_SIZE = 400;
 
-function markEventIdsState({
+export function markEventIdsState({
   db,
   eventIds,
   state,
@@ -2411,9 +2634,15 @@ function eventHasCompleteContext(event: NrEvent): boolean {
       relatedEventIds(event.referenced_events_json),
     );
 
+    const threadEdges = parseEventReferences(rawEvent).filter(
+      (edge) => edge.role === 'thread-root' || edge.role === 'thread-parent',
+    );
+
     return (
-      extractNip10References(rawEvent).every((reference) =>
-        threadIds.has(reference.id),
+      threadEdges.every((edge) =>
+        edge.target.type === 'event'
+          ? threadIds.has(edge.target.eventId)
+          : threadIds.size > 0,
       ) &&
       extractEventReferences(event.content).every((reference) =>
         referencedIds.has(reference.id),
@@ -2704,7 +2933,8 @@ function listEventsForTag({
   return rows.map(rowToNrEvent).filter((event) => {
     if (
       hiddenEventIds.has(event.id) ||
-      (event.kind === 1 && !eventHasCompleteContext(event))
+      ((event.kind === 1 || event.kind === 1111) &&
+        !eventHasCompleteContext(event))
     ) {
       return false;
     }
@@ -2795,7 +3025,8 @@ function listForYouCandidates({
   return rows.map(rowToNrEvent).filter((event) => {
     if (
       hiddenEventIds.has(event.id) ||
-      (event.kind === 1 && !eventHasCompleteContext(event))
+      ((event.kind === 1 || event.kind === 1111) &&
+        !eventHasCompleteContext(event))
     ) {
       return false;
     }
@@ -3445,7 +3676,7 @@ export function getNrListData({
               `SELECT e.*, c.summary, c.model, c.classified_at, c.classification_json
          FROM nr_events e
          LEFT JOIN nr_classifications c ON c.event_id = e.id
-          WHERE e.kind NOT IN (1, 30023) AND ${listModePredicate(mode)} ${activityTimePredicate.sql} ${activityTargetPredicate}
+           WHERE e.kind IN (6, 7, 16) AND ${listModePredicate(mode)} ${activityTimePredicate.sql} ${activityTargetPredicate}
          ORDER BY e.event_created_at DESC`,
             )
             .all(...activityTimePredicate.params) as EventRow[]
@@ -3543,6 +3774,37 @@ export function getNrListData({
         })
       : { topicAggregates: [], authorAggregates: [] };
 
+  const archivedEventIds = (
+    db
+      .prepare('SELECT id FROM nr_events WHERE archived_at IS NOT NULL')
+      .all() as Array<{ id: string }>
+  ).map((row) => row.id);
+
+  const evaluatedImageCounts = countNrEvaluatedImagesByEvent(db);
+
+  const visibleEvents = [
+    ...topicGroups.flatMap((group) => group.events),
+    ...moodGroups.flatMap((group) => group.events),
+    ...languageGroups.flatMap((group) => group.events),
+    ...forYouEvents,
+    ...activityEvents,
+  ];
+
+  const visibleIds = new Set(visibleEvents.map((event) => event.id));
+
+  const conversationContextEvents = [
+    ...new Set(
+      visibleEvents.flatMap((event) => [
+        ...relatedEventIds(event.thread_context_json),
+        ...relatedEventIds(event.referenced_events_json),
+      ]),
+    ),
+  ].flatMap((eventId) => {
+    const event = visibleIds.has(eventId) ? null : getNr(db, eventId);
+
+    return event ? [event] : [];
+  });
+
   return {
     mode,
     selectedTimeRanges: resolvedTimeSelection.ranges,
@@ -3553,6 +3815,9 @@ export function getNrListData({
     forYouEvents,
     forYouHasMore,
     forYouScores,
+    archivedEventIds,
+    evaluatedImageCounts,
+    conversationContextEvents,
     activityEvents,
     topicGroups,
     moodGroups,

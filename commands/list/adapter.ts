@@ -106,6 +106,7 @@ function collectProfilePubkeys(listData: NrListData): string[] {
     ...listData.languageGroups.flatMap((group) => group.events),
     ...listData.forYouEvents,
     ...listData.activityEvents,
+    ...listData.conversationContextEvents,
   ];
 
   return [
@@ -201,6 +202,7 @@ async function runListCommand(
     ...listData.languageGroups.flatMap((group) => group.events),
     ...listData.forYouEvents,
     ...listData.activityEvents,
+    ...listData.conversationContextEvents,
   ];
 
   if (!localMutation) {
@@ -265,6 +267,10 @@ async function runListCommand(
         }),
     });
 
+    const followedPubkeys = new Set(
+      await params.storedCtx.wot.getFollows(params.storedCtx.masterPubkey),
+    );
+
     return measureListStep({
       params,
       name: 'nr.list.web-build',
@@ -281,6 +287,7 @@ async function runListCommand(
           }),
           schedulerResource: getNrSchedulerResource(params.db),
           profiles,
+          followedPubkeys,
         }),
     });
   }

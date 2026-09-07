@@ -8,10 +8,12 @@ import type { NostrResolutionService } from '@src/nostr/resolution-service';
 import {
   createNrTable,
   getNr,
+  getNrListData,
   markEventRead,
   markEventState,
   parseAndStoreEvent,
 } from './db';
+import { createNrSettingsTable } from './settings';
 
 test('shared-cache seeding preserves NR classification and read/archive state', async () => {
   const db = new Database(':memory:');
@@ -130,5 +132,96 @@ test('does not persist compact context when shared-cache seeding fails', async (
   ).rejects.toThrow('cache unavailable');
 
   expect(getNr(db, event.id)).toBeNull();
+  db.close();
+});
+
+test('NIP-22 comments remain unread when their parent is already read', async () => {
+  const db = new Database(':memory:');
+  createNrTable(db);
+  createNrSettingsTable(db);
+
+  const parent = finalizeEvent(
+    { kind: 1, created_at: 1, content: 'parent', tags: [] },
+    generateSecretKey(),
+  );
+
+  const comment = finalizeEvent(
+    {
+      kind: 1111,
+      created_at: 2,
+      content: 'comment',
+      tags: [
+        ['E', parent.id, '', parent.pubkey],
+        ['K', '1'],
+        ['P', parent.pubkey],
+        ['e', parent.id, '', parent.pubkey],
+        ['k', '1'],
+        ['p', parent.pubkey],
+      ],
+    },
+    generateSecretKey(),
+  );
+
+  const service = {
+    seedEvents: async () => ({
+      seeded: 1,
+      skipped: 0,
+      invalid: 0,
+      results: [],
+    }),
+  } as unknown as NostrResolutionService;
+
+  const classify = () => ({
+    topics: ['nostr'],
+    moods: ['focused'],
+    summary: 'summary',
+    language: 'en',
+    model: 'test',
+    confidence: 1,
+    skip: false,
+    skipReason: null,
+  });
+
+  await parseAndStoreEvent({
+    db,
+    event: parent,
+    forceReclassify: false,
+    relayHints: [],
+    threadContext: [],
+    referencedEvents: [],
+    nostrResolution: service,
+    classify,
+  });
+
+  markEventRead(db, parent.id);
+
+  await parseAndStoreEvent({
+    db,
+    event: comment,
+    forceReclassify: false,
+    relayHints: [],
+    threadContext: [parent],
+    referencedEvents: [],
+    nostrResolution: service,
+    classify,
+  });
+
+  expect(getNr(db, comment.id)?.read_at).toBeNull();
+
+  const listData = getNrListData({
+    db,
+    mode: 'timeline',
+    timeSelection: {
+      initialized: true,
+      ranges: [{ since: 0, until: 3_600 }],
+    },
+  });
+
+  expect(
+    listData.topicGroups
+      .flatMap((group) => group.events)
+      .some((event) => event.id === comment.id),
+  ).toBe(true);
+
   db.close();
 });

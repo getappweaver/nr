@@ -1,5 +1,6 @@
 import type { SimplePool } from 'nostr-tools/pool';
 
+import { parseEventReferences } from '@src/nostr/event-references';
 import { PROFILE_RELAYS_FOR_QUERY, uniqueRelays } from '@src/nostr/nip65';
 import { filterBlockedReadRelays } from '@src/nostr/relay-notices';
 
@@ -14,29 +15,22 @@ export type Nip10Reference = {
 export function extractNip10References(event: NostrEvent): Nip10Reference[] {
   const references = new Map<string, Nip10Reference>();
 
-  for (const tag of event.tags) {
-    if (tag[0] !== 'e' || typeof tag[1] !== 'string' || !tag[1].trim()) {
+  for (const edge of parseEventReferences(event)) {
+    if (
+      (edge.role !== 'thread-root' && edge.role !== 'thread-parent') ||
+      edge.target.type !== 'event'
+    ) {
       continue;
     }
 
-    const id = tag[1].trim();
-
-    const relay =
-      typeof tag[2] === 'string' && tag[2].trim() ? tag[2].trim() : null;
-
-    const marker =
-      typeof tag[3] === 'string' && tag[3].trim() ? tag[3].trim() : null;
-
-    if (marker === 'mention') {
-      continue;
-    }
-
+    const id = edge.target.eventId;
     const existing = references.get(id);
 
     references.set(id, {
       id,
-      relay: existing?.relay ?? relay,
-      marker: existing?.marker ?? marker,
+      relay: existing?.relay ?? edge.relayHints[0] ?? null,
+      marker:
+        existing?.marker ?? (edge.role === 'thread-root' ? 'root' : 'reply'),
     });
   }
 

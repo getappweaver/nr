@@ -193,6 +193,9 @@ export type NrListData = {
   forYouEvents: NrEvent[];
   forYouHasMore: boolean;
   forYouScores: Record<string, number>;
+  archivedEventIds: string[];
+  evaluatedImageCounts: Record<string, number>;
+  conversationContextEvents: NrEvent[];
   activityEvents: NrEvent[];
   topicGroups: NrTagGroup[];
   moodGroups: NrTagGroup[];

@@ -130,6 +130,7 @@ type RenderNrListWebProps = {
   effectiveModel: string;
   schedulerResource: CapabilityResourceRef | null;
   profiles: Map<string, CachedProfile>;
+  followedPubkeys: Set<string>;
 };
 
 function agentSettingsAction(alias: string) {
@@ -345,6 +346,7 @@ export function renderNrListWeb({
   effectiveModel,
   schedulerResource,
   profiles,
+  followedPubkeys,
 }: RenderNrListWebProps): WebNodeRoot {
   const localPreferences = new Map<string, 'like' | 'dislike'>();
   const sharePrefixes = nrSharePrefixes(listData.settings);
@@ -418,6 +420,19 @@ export function renderNrListWeb({
       listData.settings.alwaysResolveUnresolvedReferences,
     mode: listData.mode,
     selectedTimeRanges: listData.selectedTimeRanges,
+    archivedIds: new Set(listData.archivedEventIds),
+    evaluatedImageCounts: listData.evaluatedImageCounts,
+    followedPubkeys,
+    conversationContextEvents: new Map(
+      [
+        ...listData.topicGroups.flatMap((group) => group.events),
+        ...listData.moodGroups.flatMap((group) => group.events),
+        ...listData.languageGroups.flatMap((group) => group.events),
+        ...listData.forYouEvents,
+        ...listData.activityEvents,
+        ...listData.conversationContextEvents,
+      ].map((event) => [event.id, event]),
+    ),
   };
 
   return {

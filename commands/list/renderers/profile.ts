@@ -11,6 +11,7 @@ export function profileNodes({
   sharePrefixes,
   translationTargetLanguage,
   mode,
+  archivedIds,
 }: ListModeNodesProps): WebNode[] {
   if (profileEvents.length === 0) {
     return [
@@ -30,6 +31,7 @@ export function profileNodes({
       translationTargetLanguage,
       mode,
       renderScope: 'profile',
+      archivedIds,
     }),
   );
 }

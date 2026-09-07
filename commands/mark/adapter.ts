@@ -1,6 +1,7 @@
 import { classifyEvent } from '../../classifier';
 import {
   getNr,
+  markEventIdsState,
   markEventState,
   markTaggedEventsState,
   parseAndStoreEvent,
@@ -75,6 +76,16 @@ export async function adaptMarkCommand(
   const eventId = optionEventId ?? positionalEventId;
   const state = selectedState(params.parsed.options);
 
+  const eventIds = [
+    ...new Set([
+      ...(eventId ? [eventId] : []),
+      ...String(params.parsed.options.event_ids ?? '')
+        .split(',')
+        .map((id) => id.trim())
+        .filter(Boolean),
+    ]),
+  ];
+
   if (!state) {
     return `Choose exactly one mark flag. ${usage(params.prefix, params.alias)}`;
   }
@@ -100,6 +111,12 @@ export async function adaptMarkCommand(
 
   if (!eventId) {
     return usage(params.prefix, params.alias);
+  }
+
+  if (eventIds.length > 1) {
+    markEventIdsState({ db: params.db, eventIds, state });
+
+    return `Marked ${state}: ${eventIds.length} events`;
   }
 
   // Store-first: a raw event action (Profile embeds, thread context)

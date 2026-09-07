@@ -58,6 +58,10 @@ export type ListModeNodesProps = {
   resolveReferencesAutomatically: boolean;
   mode: NrListMode;
   selectedTimeRanges: NrListTimeRange[];
+  archivedIds: Set<string>;
+  evaluatedImageCounts: Record<string, number>;
+  followedPubkeys: Set<string>;
+  conversationContextEvents: Map<string, NrEvent>;
 };
 
 type AuthorPreferenceActionProps = {
@@ -588,16 +592,58 @@ function replyNostrEventAction({
   };
 }
 
-function eventSignalMetadata(event: NrEvent, score: number | null): WebNode {
+type EventSignalMetadataProps = {
+  event: NrEvent;
+  score: number | null;
+  alias: string;
+  evaluatedImageCount: number;
+};
+
+function eventSignalMetadata({
+  event,
+  score,
+  alias,
+  evaluatedImageCount,
+}: EventSignalMetadataProps): WebNode {
   const topics = event.topics.length > 0 ? event.topics.join(', ') : '(none)';
   const moods = event.moods.length > 0 ? event.moods.join(', ') : '(none)';
   const scoreText = score === null ? '' : ` . Score: ${score.toFixed(2)}`;
+  const value = `Topics: ${topics} . Moods: ${moods}${scoreText}`;
 
-  return el(
-    'text',
-    { className: 'nr-for-you-metadata', size: 'sm', tone: 'muted' },
-    [text(`Topics: ${topics} . Moods: ${moods}${scoreText}`)],
-  );
+  if (evaluatedImageCount <= 0) {
+    return el(
+      'text',
+      { className: 'nr-for-you-metadata', size: 'sm', tone: 'muted' },
+      [text(value)],
+    );
+  }
+
+  return el('row', { gap: 'xs', itemAlign: 'center' }, [
+    el(
+      'text',
+      { className: 'nr-for-you-metadata', size: 'sm', tone: 'muted' },
+      [text(value)],
+    ),
+    el(
+      'button',
+      {
+        label: `🖼 ${evaluatedImageCount} evaluated`,
+        ariaLabel: 'Show evaluated image descriptions',
+        title: 'Show evaluated image descriptions',
+        action: {
+          type: 'command',
+          command: alias,
+          subcommand: 'images',
+          arguments: { event_id: event.id },
+          options: {},
+          surface: 'modal',
+          modalTitle: 'Image evaluations',
+          recordInTimeline: false,
+        },
+      },
+      [],
+    ),
+  ]);
 }
 
 function summaryNodes(summary: string): WebNode[] {
@@ -659,11 +705,20 @@ function interactionFlags(
 type MarkActionProps = {
   alias: string;
   eventId: string;
+  eventIds?: string[];
+  entityEventId?: string;
   state: 'read' | 'unread' | 'archived' | 'unarchived';
   mode: NrListMode | null;
 };
 
-function markAction({ alias, eventId, state, mode }: MarkActionProps) {
+function markAction({
+  alias,
+  eventId,
+  eventIds = [eventId],
+  entityEventId = eventId,
+  state,
+  mode,
+}: MarkActionProps) {
   if (state === 'archived' || state === 'unarchived') {
     return commandSequenceAction({
       commands: [
@@ -686,7 +741,7 @@ function markAction({ alias, eventId, state, mode }: MarkActionProps) {
     mutations: [
       {
         type: 'removeEntity',
-        entityKey: entityKey(eventId),
+        entityKey: entityKey(entityEventId),
         pruneEmptyParents: true,
       },
     ],
@@ -694,7 +749,10 @@ function markAction({ alias, eventId, state, mode }: MarkActionProps) {
       command: alias,
       subcommand: 'mark',
       arguments: { event_id: eventId },
-      options: { [state]: true },
+      options: {
+        [state]: true,
+        ...(eventIds.length > 1 ? { event_ids: eventIds.join(',') } : {}),
+      },
       ...(state === 'read'
         ? {
             monitoring: {
@@ -710,11 +768,26 @@ function markAction({ alias, eventId, state, mode }: MarkActionProps) {
 type ReadActionProps = {
   alias: string;
   eventId: string;
+  eventIds?: string[];
+  entityEventId?: string;
   mode: NrListMode | null;
 };
 
-function readAction({ alias, eventId, mode }: ReadActionProps) {
-  return markAction({ alias, eventId, state: 'read', mode });
+function readAction({
+  alias,
+  eventId,
+  eventIds,
+  entityEventId,
+  mode,
+}: ReadActionProps) {
+  return markAction({
+    alias,
+    eventId,
+    eventIds,
+    entityEventId,
+    state: 'read',
+    mode,
+  });
 }
 
 function localPreferenceAction({
@@ -1150,6 +1223,7 @@ function eventActionsMenu(
   mode: NrListMode,
   sharePrefixes: NostrSharePrefixes,
   archiveSignalReviewMode: NrSignalReviewMode,
+  readActionOverride?: ReturnType<typeof readAction>,
 ): WebNode {
   const openUrl = openInNostrUrl(event, sharePrefixes);
   const copyAction = copyNeventAction(event);
@@ -1194,11 +1268,13 @@ function eventActionsMenu(
         tag: 'menuItem',
         props: {
           label: 'Read',
-          action: readAction({
-            alias,
-            eventId: event.id,
-            mode,
-          }),
+          action:
+            readActionOverride ??
+            readAction({
+              alias,
+              eventId: event.id,
+              mode,
+            }),
         },
       },
       {
@@ -1237,12 +1313,14 @@ function referencedEventActionsMenu({
   archived,
   mode,
   sharePrefixes,
+  readActionOverride,
 }: {
   alias: string;
   event: NostrEvent;
   archived: boolean;
   mode: NrListMode;
   sharePrefixes: NostrSharePrefixes;
+  readActionOverride?: ReturnType<typeof readAction>;
 }): WebNode {
   const openUrl = openInNostrUrl(event, sharePrefixes);
   const copyAction = copyNeventAction(event);
@@ -1285,7 +1363,9 @@ function referencedEventActionsMenu({
         tag: 'menuItem',
         props: {
           label: 'Read',
-          action: markRawEventAction({ alias, event, state: 'read', mode }),
+          action:
+            readActionOverride ??
+            markRawEventAction({ alias, event, state: 'read', mode }),
         },
       },
       {
@@ -1523,10 +1603,9 @@ function nostrEmbeds({
   mode: NrListMode;
 }) {
   const eventsById = new Map(
-    referencedEvents(event).map((referencedEvent) => [
-      referencedEvent.id,
-      referencedEvent,
-    ]),
+    [...threadContextEvents(event), ...referencedEvents(event)].map(
+      (referencedEvent) => [referencedEvent.id, referencedEvent],
+    ),
   );
 
   const embeds: Record<string, unknown> = {};
@@ -2030,6 +2109,12 @@ type EventNodeProps = {
   resolveReferencesAutomatically: boolean;
   mode: NrListMode;
   renderScope: string;
+  archivedIds: Set<string>;
+  evaluatedImageCounts: Record<string, number>;
+  readEventIds?: string[];
+  readActionEventId?: string;
+  conversationActivities?: NrEvent[];
+  conversationReplies?: WebNostrPostReference[];
 };
 
 export function eventNode({
@@ -2050,6 +2135,12 @@ export function eventNode({
   resolveReferencesAutomatically,
   mode,
   renderScope,
+  archivedIds,
+  evaluatedImageCounts,
+  readEventIds,
+  readActionEventId,
+  conversationActivities = [],
+  conversationReplies = [],
 }: EventNodeProps): WebNode {
   if (isActivityEvent(event)) {
     return activityEventNode({
@@ -2061,6 +2152,7 @@ export function eventNode({
       translationTargetLanguage,
       mode,
       renderScope,
+      archivedIds,
     });
   }
 
@@ -2069,7 +2161,22 @@ export function eventNode({
   const post = postViewFromNrEvent({ event, profiles });
   const flags = interactionFlags(eventInteractions, event.id);
 
+  const conversationActivityHeaders = activityHeadersFor({
+    alias,
+    activities: conversationActivities,
+    profiles,
+    mode,
+  });
+
   const filterText = eventFilterText({ event, profiles });
+
+  const postReadAction = readAction({
+    alias,
+    eventId: readActionEventId ?? event.id,
+    eventIds: readEventIds,
+    entityEventId: event.id,
+    mode,
+  });
 
   return {
     type: 'element',
@@ -2094,10 +2201,16 @@ export function eventNode({
           mode,
           sharePrefixes,
           archiveSignalReviewMode,
+          postReadAction,
         ),
       ),
       el('stack', { gap: 'xs', fill: true }, [
-        eventSignalMetadata(event, rankingScore),
+        eventSignalMetadata({
+          event,
+          score: rankingScore,
+          alias,
+          evaluatedImageCount: evaluatedImageCounts[event.id] ?? 0,
+        }),
         ...summaryNodes(event.summary),
         keyed(
           `nr:${renderScope}:event:${event.id}:post`,
@@ -2149,11 +2262,15 @@ export function eventNode({
                 mode,
               }),
               nostrShowReplyContext: showReplyContext,
-              nostrReadAction: readAction({
-                alias,
-                eventId: event.id,
-                mode,
-              }),
+              ...(conversationActivityHeaders.length > 0
+                ? { nostrActivityHeaders: conversationActivityHeaders }
+                : {}),
+              ...(conversationReplies.length > 0
+                ? {
+                    nostrConversationReplies: conversationReplies,
+                  }
+                : {}),
+              nostrReadAction: postReadAction,
               nostrExtraActions: [
                 translationPostAction({
                   alias,
@@ -2243,6 +2360,10 @@ type GroupNodeProps = {
   resolveReferencesAutomatically: boolean;
   mode: NrListMode;
   selectedTimeRanges: NrListTimeRange[];
+  archivedIds: Set<string>;
+  evaluatedImageCounts: Record<string, number>;
+  followedPubkeys: Set<string>;
+  conversationContextEvents: Map<string, NrEvent>;
 };
 
 function activityTarget(event: NrEvent): NostrEvent | null {
@@ -2283,6 +2404,8 @@ function mergedActivityNode({
   rankingScore,
   mode,
   renderScope,
+  archivedIds,
+  evaluatedImageCounts,
 }: {
   alias: string;
   target: NostrEvent;
@@ -2297,8 +2420,14 @@ function mergedActivityNode({
   rankingScore: number | null;
   mode: NrListMode;
   renderScope: string;
+  archivedIds: Set<string>;
+  evaluatedImageCounts: Record<string, number>;
 }): WebNode {
-  const archived = activities.some((activity) => activity.archived_at !== null);
+  const archived =
+    archivedIds.has(target.id) ||
+    (targetEvent?.archived_at ?? null) !== null ||
+    activities.some((activity) => activity.archived_at !== null);
+
   const summary = rankingEvent?.summary ?? activities[0]?.summary ?? '';
 
   const relatedEvents = new Map(
@@ -2415,7 +2544,14 @@ function mergedActivityNode({
       ),
       el('stack', { fill: true }, [
         ...(rankingEvent
-          ? [eventSignalMetadata(rankingEvent, rankingScore)]
+          ? [
+              eventSignalMetadata({
+                event: rankingEvent,
+                score: rankingScore,
+                alias,
+                evaluatedImageCount: evaluatedImageCounts[rankingEvent.id] ?? 0,
+              }),
+            ]
           : []),
         ...summaryNodes(summary),
         profilePostNode({
@@ -2442,6 +2578,521 @@ function mergedActivityNode({
   } as WebNode;
 }
 
+const CONVERSATION_SLOT_SECONDS = 60 * 60;
+
+type ConversationGroup = {
+  key: string;
+  slot: number;
+  main: NostrEvent;
+  mainStored: NrEvent | null;
+  replies: NrEvent[];
+  activities: NrEvent[];
+};
+
+function activityHeadersFor({
+  alias,
+  activities,
+  profiles,
+  mode,
+}: {
+  alias: string;
+  activities: NrEvent[];
+  profiles: Map<string, CachedProfile>;
+  mode: NrListMode;
+}) {
+  return activities.flatMap((activity) => {
+    const event = rawNrEvent(activity);
+
+    if (!event) {
+      return [];
+    }
+
+    const label =
+      event.kind === 6 || event.kind === 16
+        ? 'Reposted'
+        : event.kind === 7
+          ? `Reacted ${event.content || '+'}`
+          : null;
+
+    return label
+      ? [activityHeaderFor({ alias, label, event, profiles, mode })]
+      : [];
+  });
+}
+
+function rawNrEvent(event: NrEvent): NostrEvent | null {
+  try {
+    const parsed = NostrEventSchema.safeParse(JSON.parse(event.raw_json));
+
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+function nostrAddressKey(event: NostrEvent): string | null {
+  if (
+    event.kind !== 0 &&
+    event.kind !== 3 &&
+    !(event.kind >= 10_000 && event.kind < 20_000) &&
+    !(event.kind >= 30_000 && event.kind < 40_000)
+  ) {
+    return null;
+  }
+
+  const identifier =
+    event.kind >= 30_000 && event.kind < 40_000
+      ? (event.tags.find((tag) => tag[0] === 'd')?.[1] ?? '')
+      : '';
+
+  return `${event.kind}:${event.pubkey}:${identifier}`;
+}
+
+function conversationMainEvent({
+  event,
+  eventsById,
+  conversationEvents,
+}: {
+  event: NrEvent;
+  eventsById: Map<string, NrEvent>;
+  conversationEvents: Map<string, NrEvent>;
+}): NostrEvent | null {
+  const rawEvent = rawNrEvent(event);
+
+  if (!rawEvent) {
+    return null;
+  }
+
+  const category = categoryForNrEvent(rawEvent);
+
+  if (category !== 'replies' && category !== 'comments') {
+    return null;
+  }
+
+  const related = new Map<string, NostrEvent>();
+
+  for (const stored of [
+    ...eventsById.values(),
+    ...conversationEvents.values(),
+  ]) {
+    const raw = rawNrEvent(stored);
+
+    if (raw) {
+      related.set(raw.id, raw);
+    }
+  }
+
+  for (const raw of [
+    ...threadContextEvents(event),
+    ...referencedEvents(event),
+  ]) {
+    related.set(raw.id, raw);
+  }
+
+  const edges = parseEventReferences(rawEvent).filter(
+    (edge) => edge.role === 'thread-root' || edge.role === 'thread-parent',
+  );
+
+  edges.sort((left, right) =>
+    left.role === right.role ? 0 : left.role === 'thread-root' ? -1 : 1,
+  );
+
+  for (const edge of edges) {
+    if (edge.target.type === 'event') {
+      const target = related.get(edge.target.eventId);
+
+      if (target) {
+        return target;
+      }
+
+      continue;
+    }
+
+    const targetKey = `${edge.target.kind}:${edge.target.pubkey}:${edge.target.identifier}`;
+
+    const target = [...related.values()].find(
+      (candidate) => nostrAddressKey(candidate) === targetKey,
+    );
+
+    if (target) {
+      return target;
+    }
+  }
+
+  return null;
+}
+
+function conversationReplyReference({
+  alias,
+  reply,
+  profiles,
+  interactions,
+  localPreferences,
+  authorPreferences,
+  sharePrefixes,
+  translationTargetLanguage,
+  mode,
+  archivedIds,
+}: {
+  alias: string;
+  reply: NrEvent;
+  profiles: Map<string, CachedProfile>;
+  interactions: NrInteraction[];
+  localPreferences: Map<string, 'like' | 'dislike'>;
+  authorPreferences: Map<string, NrAuthorPreferenceValue>;
+  sharePrefixes: NostrSharePrefixes;
+  translationTargetLanguage: string;
+  mode: NrListMode;
+  archivedIds: Set<string>;
+}): WebNostrPostReference | null {
+  const event = rawNrEvent(reply);
+
+  if (!event) {
+    return null;
+  }
+
+  const profile = profileForPubkey({ profiles, pubkey: event.pubkey });
+  const archived = archivedIds.has(reply.id);
+  const flags = interactionFlags(interactions, reply.id);
+
+  const reference = profileReferenceWithEmbeds({
+    alias,
+    event,
+    profiles,
+    relatedEvents: new Map(
+      [...threadContextEvents(reply), ...referencedEvents(reply)].map(
+        (related) => [related.id, related],
+      ),
+    ),
+    translationTargetLanguage,
+    sharePrefixes,
+    mode,
+  });
+
+  return {
+    ...reference,
+    readAction: null,
+    archiveAction: markRawEventAction({
+      alias,
+      event,
+      state: archived ? 'unarchived' : 'archived',
+      mode,
+    }),
+    archived,
+    liked: flags.liked,
+    replied: flags.replied,
+    reposted: flags.reposted,
+    quoted: flags.quoted,
+    trailingActions: [
+      ...(reference.trailingActions ?? []),
+      ...localPreferenceActions({
+        alias,
+        eventId: reply.id,
+        mode,
+        preference: localPreferences.get(reply.id) ?? null,
+        targetAuthorPubkey: reply.pubkey,
+        targetAuthorLabel: signalReviewAuthorLabel(profile, reply.pubkey),
+        candidateTopics: signalReviewTopics(reply),
+      }),
+    ],
+    profileActions: authorPreferenceActions({
+      alias,
+      pubkey: reply.pubkey,
+      mode,
+      preference: authorPreferences.get(reply.pubkey.toLowerCase()) ?? null,
+    }),
+    profileActionsReadAction: authorPreferenceActionsReadAction({
+      alias,
+      pubkey: reply.pubkey,
+      mode,
+    }),
+  };
+}
+
+function conversationParentPlaceholder({
+  reply,
+  mainEventId,
+  visibleReplyIds,
+  sharePrefixes,
+}: {
+  reply: NrEvent;
+  mainEventId: string;
+  visibleReplyIds: Set<string>;
+  sharePrefixes: NostrSharePrefixes;
+}): WebNostrPostReference | null {
+  const event = rawNrEvent(reply);
+
+  if (!event) {
+    return null;
+  }
+
+  const parentEdge = parseEventReferences(event).find(
+    (edge) => edge.role === 'thread-parent',
+  );
+
+  if (!parentEdge) {
+    return null;
+  }
+
+  if (parentEdge.target.type === 'address') {
+    const address = `${parentEdge.target.kind}:${parentEdge.target.pubkey}:${parentEdge.target.identifier}`;
+
+    if (address === mainEventId || visibleReplyIds.has(address)) {
+      return null;
+    }
+
+    return {
+      entityKey: entityKey(address),
+      type: 'address',
+      id: address,
+      pubkey: parentEdge.target.pubkey,
+      relayHints: parentEdge.relayHints,
+      sharePrefixes,
+      resolutionStatus: 'unresolved',
+      resolveOnLoad: false,
+      showActions: false,
+    };
+  }
+
+  const parentId = parentEdge.target.eventId;
+
+  if (parentId === mainEventId || visibleReplyIds.has(parentId)) {
+    return null;
+  }
+
+  const relatedParent = [
+    ...threadContextEvents(reply),
+    ...referencedEvents(reply),
+  ].find((candidate) => candidate.id === parentId);
+
+  let token: string | undefined;
+
+  try {
+    token = `nostr:${nip19.neventEncode({
+      id: parentId,
+      relays: parentEdge.relayHints,
+      author:
+        relatedParent?.pubkey ?? parentEdge.target.authorPubkey ?? undefined,
+      kind: relatedParent?.kind,
+    })}`;
+  } catch {
+    token = undefined;
+  }
+
+  return {
+    entityKey: entityKey(parentId),
+    token,
+    type: 'event',
+    id: parentId,
+    pubkey:
+      relatedParent?.pubkey ?? parentEdge.target.authorPubkey ?? undefined,
+    kind: relatedParent?.kind,
+    relayHints: parentEdge.relayHints,
+    sharePrefixes,
+    resolutionStatus: 'unresolved',
+    resolveOnLoad: false,
+    showActions: false,
+  };
+}
+
+function conversationGroupNode({
+  conversation,
+  alias,
+  profiles,
+  interactions,
+  localPreferences,
+  authorPreferences,
+  sharePrefixes,
+  translationTargetLanguage,
+  rankingScores,
+  archiveSignalReviewMode,
+  likeSignalReviewMode,
+  replySignalReviewMode,
+  repostQuoteSignalReviewMode,
+  resolveReferencesAutomatically,
+  mode,
+  renderScope,
+  archivedIds,
+  evaluatedImageCounts,
+}: {
+  conversation: ConversationGroup;
+  alias: string;
+  profiles: Map<string, CachedProfile>;
+  interactions: NrInteraction[];
+  localPreferences: Map<string, 'like' | 'dislike'>;
+  authorPreferences: Map<string, NrAuthorPreferenceValue>;
+  sharePrefixes: NostrSharePrefixes;
+  translationTargetLanguage: string;
+  rankingScores: Record<string, number>;
+  archiveSignalReviewMode: NrSignalReviewMode;
+  likeSignalReviewMode: NrSignalReviewMode;
+  replySignalReviewMode: NrSignalReviewMode;
+  repostQuoteSignalReviewMode: NrSignalReviewMode;
+  resolveReferencesAutomatically: boolean;
+  mode: NrListMode;
+  renderScope: string;
+  archivedIds: Set<string>;
+  evaluatedImageCounts: Record<string, number>;
+}): WebNode {
+  const replies = [...conversation.replies].sort(
+    (left, right) => left.event_created_at - right.event_created_at,
+  );
+
+  const mainIsInSlot =
+    conversation.mainStored !== null &&
+    conversation.mainStored.read_at === null &&
+    Math.floor(
+      conversation.mainStored.event_created_at / CONVERSATION_SLOT_SECONDS,
+    ) === conversation.slot;
+
+  const readEventIds = [
+    ...(mainIsInSlot && conversation.mainStored
+      ? [conversation.mainStored.id]
+      : []),
+    ...replies.map((reply) => reply.id),
+    ...conversation.activities.map((activity) => activity.id),
+  ];
+
+  const readActionEventId = readEventIds[0]!;
+  const childScope = `${renderScope}:conversation:${conversation.key}`;
+
+  const visibleReplyIds = new Set(replies.map((reply) => reply.id));
+  const renderedParentIds = new Set<string>();
+
+  const conversationReplies = replies.flatMap((reply) => {
+    const parent = conversationParentPlaceholder({
+      reply,
+      mainEventId: conversation.main.id,
+      visibleReplyIds,
+      sharePrefixes,
+    });
+
+    const reference = conversationReplyReference({
+      alias,
+      reply,
+      profiles,
+      interactions,
+      localPreferences,
+      authorPreferences,
+      sharePrefixes,
+      translationTargetLanguage,
+      mode,
+      archivedIds,
+    });
+
+    const parentReferences =
+      parent?.id && !renderedParentIds.has(parent.id) ? [parent] : [];
+
+    if (parent?.id) {
+      renderedParentIds.add(parent.id);
+    }
+
+    return [...parentReferences, ...(reference ? [reference] : [])];
+  });
+
+  if (conversation.mainStored) {
+    const node = eventNode({
+      alias,
+      event: conversation.mainStored,
+      profiles,
+      showReplyContext: false,
+      interactions,
+      localPreferences,
+      authorPreferences,
+      sharePrefixes,
+      translationTargetLanguage,
+      rankingScore: rankingScores[conversation.mainStored.id] ?? null,
+      archiveSignalReviewMode,
+      likeSignalReviewMode,
+      replySignalReviewMode,
+      repostQuoteSignalReviewMode,
+      resolveReferencesAutomatically,
+      mode,
+      renderScope: childScope,
+      archivedIds,
+      evaluatedImageCounts,
+      readEventIds,
+      readActionEventId,
+      conversationActivities: conversation.activities,
+      conversationReplies,
+    });
+
+    if (node.type === 'element' && node.tag === 'treeItem') {
+      return {
+        ...node,
+        renderKey: `nr:${childScope}:main:${conversation.main.id}`,
+        props: {
+          ...node.props,
+          filterTimestamps: replies.map((reply) => reply.event_created_at),
+        },
+        children: [],
+      };
+    }
+  }
+
+  const conversationReadAction = readAction({
+    alias,
+    eventId: readActionEventId,
+    eventIds: readEventIds,
+    entityEventId: conversation.main.id,
+    mode,
+  });
+
+  return {
+    type: 'element',
+    tag: 'treeItem',
+    renderKey: `nr:${childScope}:main:${conversation.main.id}`,
+    props: {
+      id: `nr-conversation-${conversation.main.id}-${conversation.slot}`,
+      entityKey: entityKey(conversation.main.id),
+      className: `nr-list-event nr-conversation${mode === 'for-you' ? ' nr-for-you-event' : ''}`,
+      defaultExpanded: false,
+      filterTimestamps: replies.map((reply) => reply.event_created_at),
+    },
+    summary: el('row', { gap: 'xs', align: 'between', itemAlign: 'start' }, [
+      keyed(
+        `nr:${childScope}:main:${conversation.main.id}:menu`,
+        referencedEventActionsMenu({
+          alias,
+          event: conversation.main,
+          archived: archivedIds.has(conversation.main.id),
+          mode,
+          sharePrefixes,
+          readActionOverride: conversationReadAction,
+        }),
+      ),
+      el('stack', { fill: true }, [
+        profilePostNode({
+          alias,
+          event: conversation.main,
+          profiles,
+          replyContext: [],
+          embeds: {},
+          activityHeaders: activityHeadersFor({
+            alias,
+            activities: conversation.activities,
+            profiles,
+            mode,
+          }),
+          archived: archivedIds.has(conversation.main.id),
+          localPreference: undefined,
+          authorPreference:
+            authorPreferences.get(conversation.main.pubkey.toLowerCase()) ??
+            null,
+          sharePrefixes,
+          translationTargetLanguage,
+          mode,
+          renderScope: `${childScope}:main`,
+          signalCandidateTopics: [],
+          readActionOverride: conversationReadAction,
+          conversationReplies,
+        }),
+      ]),
+    ]),
+    children: [],
+  } as WebNode;
+}
+
 export function groupEventNodes({
   alias,
   events,
@@ -2459,6 +3110,10 @@ export function groupEventNodes({
   resolveReferencesAutomatically,
   mode,
   renderScope,
+  archivedIds,
+  evaluatedImageCounts,
+  followedPubkeys,
+  conversationContextEvents,
 }: {
   alias: string;
   events: NrEvent[];
@@ -2476,8 +3131,73 @@ export function groupEventNodes({
   resolveReferencesAutomatically: boolean;
   mode: NrListMode;
   renderScope: string;
+  archivedIds: Set<string>;
+  evaluatedImageCounts: Record<string, number>;
+  followedPubkeys: Set<string>;
+  conversationContextEvents: Map<string, NrEvent>;
 }): WebNode[] {
   const eventsById = new Map(events.map((event) => [event.id, event]));
+
+  const normalizedFollowedPubkeys = new Set(
+    [...followedPubkeys].map((pubkey) => pubkey.toLowerCase()),
+  );
+
+  const conversations = new Map<string, ConversationGroup>();
+  const conversationKeyByMember = new Map<string, string>();
+
+  if (mode !== 'archive') {
+    for (const event of events) {
+      const main = conversationMainEvent({
+        event,
+        eventsById,
+        conversationEvents: conversationContextEvents,
+      });
+
+      if (
+        !main ||
+        !normalizedFollowedPubkeys.has(event.pubkey.toLowerCase()) ||
+        !normalizedFollowedPubkeys.has(main.pubkey.toLowerCase())
+      ) {
+        continue;
+      }
+
+      const slot =
+        Math.floor(event.event_created_at / CONVERSATION_SLOT_SECONDS) *
+        CONVERSATION_SLOT_SECONDS;
+
+      const key = `${main.id}:${slot}`;
+      const existing = conversations.get(key);
+
+      if (existing) {
+        existing.replies.push(event);
+      } else {
+        conversations.set(key, {
+          key,
+          slot,
+          main,
+          mainStored:
+            eventsById.get(main.id) ??
+            conversationContextEvents.get(main.id) ??
+            null,
+          replies: [event],
+          activities: [],
+        });
+      }
+
+      conversationKeyByMember.set(event.id, key);
+
+      const mainEvent = eventsById.get(main.id);
+
+      if (
+        mainEvent &&
+        Math.floor(mainEvent.event_created_at / CONVERSATION_SLOT_SECONDS) *
+          CONVERSATION_SLOT_SECONDS ===
+          slot
+      ) {
+        conversationKeyByMember.set(main.id, key);
+      }
+    }
+  }
 
   const activitiesByTarget = new Map<
     string,
@@ -2502,14 +3222,81 @@ export function groupEventNodes({
     } else {
       activitiesByTarget.set(target.id, { target, activities: [event] });
     }
+
+    const slot =
+      Math.floor(event.event_created_at / CONVERSATION_SLOT_SECONDS) *
+      CONVERSATION_SLOT_SECONDS;
+
+    const conversationKey = `${target.id}:${slot}`;
+    const conversation = conversations.get(conversationKey);
+
+    if (
+      conversation &&
+      normalizedFollowedPubkeys.has(event.pubkey.toLowerCase())
+    ) {
+      conversation.activities.push(event);
+      conversationKeyByMember.set(event.id, conversationKey);
+    }
   }
 
   const renderedTargets = new Set<string>();
+  const renderedConversations = new Set<string>();
+
+  const conversationMainIds = new Set(
+    [...conversations.values()].map((conversation) => conversation.main.id),
+  );
+
   const nodes: WebNode[] = [];
 
   for (const event of events) {
+    const conversationKey = conversationKeyByMember.get(event.id);
+
+    const conversation = conversationKey
+      ? conversations.get(conversationKey)
+      : null;
+
+    if (conversation) {
+      if (!renderedConversations.has(conversation.key)) {
+        renderedConversations.add(conversation.key);
+        renderedTargets.add(conversation.main.id);
+
+        for (const reply of conversation.replies) {
+          renderedTargets.add(reply.id);
+        }
+
+        nodes.push(
+          conversationGroupNode({
+            conversation,
+            alias,
+            profiles,
+            interactions,
+            localPreferences,
+            authorPreferences,
+            sharePrefixes,
+            translationTargetLanguage,
+            rankingScores,
+            archiveSignalReviewMode,
+            likeSignalReviewMode,
+            replySignalReviewMode,
+            repostQuoteSignalReviewMode,
+            resolveReferencesAutomatically,
+            mode,
+            renderScope,
+            archivedIds,
+            evaluatedImageCounts,
+          }),
+        );
+      }
+
+      continue;
+    }
+
     if (isActivityEvent(event)) {
       const target = activityTarget(event);
+
+      if (target && conversationMainIds.has(target.id)) {
+        continue;
+      }
 
       if (target && !renderedTargets.has(target.id)) {
         const aggregate = activitiesByTarget.get(target.id);
@@ -2534,6 +3321,8 @@ export function groupEventNodes({
               rankingScore: rankingScores[targetEvent?.id ?? event.id] ?? null,
               mode,
               renderScope,
+              archivedIds,
+              evaluatedImageCounts,
             }),
           );
 
@@ -2574,6 +3363,8 @@ export function groupEventNodes({
           rankingScore: rankingScores?.[event.id] ?? null,
           mode,
           renderScope,
+          archivedIds,
+          evaluatedImageCounts,
         }),
       );
     } else {
@@ -2596,6 +3387,8 @@ export function groupEventNodes({
           resolveReferencesAutomatically,
           mode,
           renderScope,
+          archivedIds,
+          evaluatedImageCounts,
         }),
       );
     }
@@ -2621,6 +3414,10 @@ function groupNode({
   resolveReferencesAutomatically,
   mode,
   selectedTimeRanges,
+  archivedIds,
+  evaluatedImageCounts,
+  followedPubkeys,
+  conversationContextEvents,
 }: GroupNodeProps): WebNode {
   return {
     type: 'element',
@@ -2751,6 +3548,10 @@ function groupNode({
       resolveReferencesAutomatically,
       mode,
       renderScope: `${group.type}:${encodeURIComponent(group.tag)}`,
+      archivedIds,
+      evaluatedImageCounts,
+      followedPubkeys,
+      conversationContextEvents,
     }),
   };
 }
@@ -2774,6 +3575,10 @@ type SectionNodeProps = {
   resolveReferencesAutomatically: boolean;
   mode: NrListMode;
   selectedTimeRanges: NrListTimeRange[];
+  archivedIds: Set<string>;
+  evaluatedImageCounts: Record<string, number>;
+  followedPubkeys: Set<string>;
+  conversationContextEvents: Map<string, NrEvent>;
 };
 
 export function sectionNode({
@@ -2795,6 +3600,10 @@ export function sectionNode({
   resolveReferencesAutomatically,
   mode,
   selectedTimeRanges,
+  archivedIds,
+  evaluatedImageCounts,
+  followedPubkeys,
+  conversationContextEvents,
 }: SectionNodeProps): WebNode {
   return {
     type: 'element',
@@ -2864,6 +3673,10 @@ export function sectionNode({
               resolveReferencesAutomatically,
               mode,
               selectedTimeRanges,
+              archivedIds,
+              evaluatedImageCounts,
+              followedPubkeys,
+              conversationContextEvents,
             }),
           ),
   };
@@ -2930,6 +3743,8 @@ function profilePostNode({
   mode,
   renderScope,
   signalCandidateTopics,
+  readActionOverride,
+  conversationReplies = [],
 }: {
   alias: string;
   event: NostrEvent;
@@ -2954,6 +3769,8 @@ function profilePostNode({
   mode: NrListMode;
   renderScope: string;
   signalCandidateTopics: string[];
+  readActionOverride?: ReturnType<typeof readAction>;
+  conversationReplies?: WebNostrPostReference[];
 }): WebNode {
   const profile = profileForPubkey({ profiles, pubkey: event.pubkey });
 
@@ -3047,14 +3864,25 @@ function profilePostNode({
         ...(activityHeaders.length > 0
           ? { nostrActivityHeaders: activityHeaders }
           : {}),
+        ...(conversationReplies.length > 0
+          ? {
+              nostrConversationReplies: conversationReplies,
+            }
+          : {}),
+        ...(readActionOverride
+          ? { nostrReadAction: readActionOverride }
+          : activityHeaders.length > 0
+            ? {
+                nostrReadAction: markRawEventAction({
+                  alias,
+                  event,
+                  state: 'read',
+                  mode,
+                }),
+              }
+            : {}),
         ...(activityHeaders.length > 0
           ? {
-              nostrReadAction: markRawEventAction({
-                alias,
-                event,
-                state: 'read',
-                mode,
-              }),
               nostrArchiveAction: markRawEventAction({
                 alias,
                 event,
@@ -3272,6 +4100,7 @@ export function profileEventNode({
   translationTargetLanguage,
   mode,
   renderScope,
+  archivedIds,
 }: {
   alias: string;
   profileEvent: NrProfileEvent;
@@ -3281,6 +4110,7 @@ export function profileEventNode({
   translationTargetLanguage: string;
   mode: NrListMode;
   renderScope: string;
+  archivedIds: Set<string>;
 }): WebNode {
   const { event, referencedEvents } = profileEvent;
 
@@ -3403,7 +4233,7 @@ export function profileEventNode({
               replyContext: [],
               embeds: {},
               activityHeaders: activityHeader ? [activityHeader] : [],
-              archived: false,
+              archived: archivedIds.has(reference.id),
               localPreference: undefined,
               authorPreference:
                 authorPreferences.get(reference.pubkey.toLowerCase()) ?? null,
@@ -3422,7 +4252,7 @@ export function profileEventNode({
               replyContext,
               embeds,
               activityHeaders: activityHeader ? [activityHeader] : [],
-              archived: false,
+              archived: archivedIds.has(displayEvent.id),
               localPreference: undefined,
               authorPreference:
                 authorPreferences.get(displayEvent.pubkey.toLowerCase()) ??
@@ -3448,6 +4278,7 @@ function activityEventNode({
   translationTargetLanguage,
   mode,
   renderScope,
+  archivedIds,
 }: {
   alias: string;
   event: NrEvent;
@@ -3457,6 +4288,7 @@ function activityEventNode({
   translationTargetLanguage: string;
   mode: NrListMode;
   renderScope: string;
+  archivedIds: Set<string>;
 }): WebNode {
   let rawEvent: NostrEvent;
 
@@ -3481,5 +4313,6 @@ function activityEventNode({
     translationTargetLanguage,
     mode,
     renderScope,
+    archivedIds,
   });
 }

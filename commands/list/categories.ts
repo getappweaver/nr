@@ -91,7 +91,12 @@ export function categoryForNrEvent(event: NostrEvent): NrFeedCategory | null {
       return 'quotes';
     }
 
-    if (event.tags.some((tag) => tag[0] === 'e' && tag[1]?.trim())) {
+    if (
+      event.tags.some(
+        (tag) =>
+          tag[0] === 'e' && tag[1]?.trim() && tag[3]?.trim() !== 'mention',
+      )
+    ) {
       return 'replies';
     }
 
