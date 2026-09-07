@@ -1,6 +1,6 @@
 {
   "name": "appweaver-nr-plugin",
-  "version": "3.4.0",
+  "version": "3.4.1",
   "appweaver": {
     "title": "Nostr Radar",
     "icon": "./commands/list/renderers/list.svg",

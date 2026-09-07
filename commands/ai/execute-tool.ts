@@ -20,6 +20,7 @@ import {
 } from '@src/nostr/relay-notices';
 import { createNostrResolutionService } from '@src/nostr/resolution-service';
 import { createWotServices } from '@src/nostr/wot-service';
+import { notifyAllWebPushSubscriptions } from '@src/web/push-send';
 
 import { fetchEvaluate } from '../fetch-latest/adapter';
 
@@ -88,6 +89,21 @@ export async function executeTool({
           }),
           nostrResolution: nostrResolutionRuntime.service,
           agent,
+          sendWebPush: async ({ title, body, url }) => {
+            if (config.webPush === null) {
+              return { status: 'disabled' as const };
+            }
+
+            const summary = await notifyAllWebPushSubscriptions({
+              db: coreDb,
+              config: config.webPush,
+              title,
+              body,
+              url,
+            });
+
+            return { status: 'complete' as const, ...summary };
+          },
           getRoutstrSkKey: () => getRoutstrSkKey(coreDb),
           capabilities: createCapabilityClient({
             registry: capabilityRegistry,

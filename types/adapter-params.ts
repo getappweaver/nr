@@ -18,6 +18,7 @@ export type NrRuntimeContext = Pick<
   | 'wot'
   | 'nostrResolution'
   | 'agent'
+  | 'sendWebPush'
   | 'getRoutstrSkKey'
   | 'capabilities'
   | 'monitoring'

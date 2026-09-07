@@ -134,6 +134,11 @@ type FetchEvaluateProps = {
   waitForRelayListRefresh: boolean;
 };
 
+type SendFetchCompletionNotificationProps = {
+  params: Pick<FetchRuntimeParams, 'source' | 'storedCtx'>;
+  result: string;
+};
+
 type FetchLockRow = {
   owner_pid: number;
 };
@@ -458,6 +463,23 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+export async function sendFetchCompletionNotification({
+  params,
+  result,
+}: SendFetchCompletionNotificationProps): Promise<void> {
+  try {
+    await params.storedCtx.sendWebPush({
+      title: 'Nostr Radar fetch finished',
+      body: result.split('\n').slice(0, 2).join('\n'),
+      url: '/?command=nr&subcommand=list',
+    });
+  } catch (error) {
+    debug(
+      `nr fetch-latest: completion Web Push failed: ${errorMessage(error)}`,
+    );
+  }
+}
+
 export async function adaptFetchLatestCommand(
   params: NrCommandAdapterParams,
 ): Promise<string> {
@@ -490,7 +512,11 @@ export async function fetchEvaluate(
   const releaseLock = acquireFetchLock(props.params.db);
 
   try {
-    return await runFetchEvaluate(props);
+    const result = await runFetchEvaluate(props);
+
+    await sendFetchCompletionNotification({ params: props.params, result });
+
+    return result;
   } finally {
     releaseLock();
   }
