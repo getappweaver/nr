@@ -1,17 +1,17 @@
 {
   "name": "appweaver-nr-plugin",
-  "version": "3.4.1",
+  "version": "4.0.0",
   "appweaver": {
     "title": "Nostr Radar",
     "icon": "./commands/list/renderers/list.svg",
     "website": "https://getappweaver.com/apps/nostr-radar",
-    "coreApiVersion": "^12.6.0",
+    "coreApiVersion": "^12.7.0",
     "capabilities": {
       "provides": [],
       "uses": [
         {
           "name": "scheduler",
-          "version": 1
+          "version": 2
         },
         {
           "name": "translation",

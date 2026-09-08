@@ -510,3 +510,7 @@ export function saveNrSchedulerResource(
 ): void {
   setSetting(db, SCHEDULER_RESOURCE_KEY, JSON.stringify(resource));
 }
+
+export function clearNrSchedulerResource(db: Database): void {
+  deleteSetting(db, SCHEDULER_RESOURCE_KEY);
+}

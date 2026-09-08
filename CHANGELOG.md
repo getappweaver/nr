@@ -4,9 +4,13 @@ All notable changes for each version are listed under the corresponding `v*.*.*`
 Tags and this file are updated by the post-commit hook when you commit with `--patch`, `--minor`, or `--major` (see CONTRIBUTING.md).
 You can also run `bun run release:changelog` to rewrite this file from tags.
 
+## [v4.0.0] - 2026-09-08
+
+- feat: switching to use scheduler.v2 for auto fetch (bf86559)
+
 ## [v3.4.1] - 2026-09-07
 
-- feat: notify when Nostr Radar fetch completes (369dd04)
+- feat: notify when Nostr Radar fetch completes (c1370e5)
 
 ## [v3.4.0] - 2026-09-07
 

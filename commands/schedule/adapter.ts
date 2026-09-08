@@ -1,16 +1,26 @@
 import {
-  SchedulerV1,
-  type SchedulerCreateInputV1,
-} from '@src/capabilities/scheduler.v1';
+  SchedulerV2,
+  type SchedulerCreateInputV2,
+  type SchedulerTaskV2,
+} from '@src/capabilities/scheduler.v2';
+import { CapabilityError } from '@src/core/capabilities/errors';
 import type { WebNode, WebNodeRoot } from '@src/web/ui-schema';
 
 import {
+  clearNrSchedulerResource,
   getNrSchedulerResource,
   saveNrSchedulerResource,
 } from '../../settings';
 import type { NrCommandAdapterParams } from '../../types/adapter-params';
 
-export const NR_HOURLY_SCHEDULER_INPUT: SchedulerCreateInputV1 = {
+const NR_FETCH_TASK = {
+  type: 'plugin-tool',
+  alias: 'nr',
+  toolName: 'fetch_evaluate',
+  input: {},
+} satisfies SchedulerTaskV2;
+
+export const NR_HOURLY_SCHEDULER_INPUT: SchedulerCreateInputV2 = {
   name: 'Nostr Radar fetch and evaluate',
   schedule: {
     type: 'cron',
@@ -18,15 +28,72 @@ export const NR_HOURLY_SCHEDULER_INPUT: SchedulerCreateInputV1 = {
     description: 'Hourly, five minutes after the hour',
     maxRuns: null,
   },
-  task: {
-    type: 'agent-prompt',
-    prompt:
-      "Run `bun src/cli.ts nr fetch_evaluate '{}'` to fetch and evaluate the user's Nostr posts.",
-    mode: 'agent',
-    workspaceTarget: 'appweaver',
-  },
+  task: NR_FETCH_TASK,
   enabled: true,
 };
+
+export async function loadNrSchedulerV2(
+  params: Pick<NrCommandAdapterParams, 'db' | 'storedCtx'>,
+) {
+  const stored = getNrSchedulerResource(params.db);
+
+  if (!stored) {
+    return null;
+  }
+
+  try {
+    const shown = await params.storedCtx.capabilities.invoke({
+      operation: SchedulerV2.operations.show,
+      provider: stored.capability.version === 2 ? stored.providerId : 'auto',
+      input: { resourceId: stored.resourceId },
+    });
+
+    if (shown.status !== 'success') {
+      return null;
+    }
+
+    const task = shown.output.task;
+    const expected = NR_FETCH_TASK;
+
+    const isCurrent =
+      task.type === 'plugin-tool' &&
+      task.alias === expected.alias &&
+      task.toolName === expected.toolName &&
+      JSON.stringify(task.input) === JSON.stringify(expected.input);
+
+    if (isCurrent) {
+      saveNrSchedulerResource(params.db, shown.output.resource);
+
+      return shown.output;
+    }
+
+    const updated = await params.storedCtx.capabilities.invoke({
+      operation: SchedulerV2.operations['update-task'],
+      provider: shown.provider.providerId,
+      input: {
+        resourceId: stored.resourceId,
+        task: expected,
+      },
+    });
+
+    if (updated.status !== 'success') {
+      return null;
+    }
+
+    saveNrSchedulerResource(params.db, updated.output.resource);
+
+    return { ...shown.output, ...updated.output };
+  } catch (error) {
+    if (
+      error instanceof CapabilityError &&
+      error.code === 'CAPABILITY_RESOURCE_NOT_FOUND'
+    ) {
+      clearNrSchedulerResource(params.db);
+    }
+
+    return null;
+  }
+}
 
 function text(value: string): WebNode {
   return { type: 'text', value };
@@ -46,7 +113,7 @@ function missingProviderRoot(alias: string): WebNodeRoot {
           type: 'element',
           tag: 'text',
           children: [
-            text('Scheduling requires an installed scheduler:v1 service.'),
+            text('Scheduling requires an installed scheduler:v2 service.'),
           ],
         },
         {
@@ -57,7 +124,7 @@ function missingProviderRoot(alias: string): WebNodeRoot {
             action: {
               type: 'clientAction',
               action: 'plugins.openCatalog',
-              payload: { filter: 'capability:scheduler:v1' },
+              payload: { filter: 'capability:scheduler:v2' },
             },
           },
         },
@@ -162,16 +229,12 @@ export async function adaptScheduleCommand(
   const stored = getNrSchedulerResource(params.db);
 
   if (stored) {
-    const result = await params.storedCtx.capabilities.invoke({
-      operation: SchedulerV1.operations.show,
-      provider: stored.providerId,
-      input: { resourceId: stored.resourceId },
-    });
+    const output = await loadNrSchedulerV2(params);
 
-    if (result.status === 'success') {
-      return params.source === 'web' && result.output.view
-        ? result.output.view
-        : `Scheduled job: ${result.output.name} (${result.output.status})`;
+    if (output) {
+      return params.source === 'web' && output.view
+        ? output.view
+        : `Scheduled job: ${output.name} (${output.status})`;
     }
 
     return params.source === 'web'
@@ -182,7 +245,7 @@ export async function adaptScheduleCommand(
   const providerOption = params.parsed.options.provider;
 
   const result = await params.storedCtx.capabilities.invoke({
-    operation: SchedulerV1.operations.create,
+    operation: SchedulerV2.operations.create,
     provider: typeof providerOption === 'string' ? providerOption : 'auto',
     input: NR_HOURLY_SCHEDULER_INPUT,
   });

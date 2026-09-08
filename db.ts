@@ -3542,11 +3542,45 @@ export function scoreNrEventForYou({
   }
 
   const total = topics.reduce(
-    (score, topic) => score + (topicAffinities.get(topic) ?? 0),
+    (score, topic) => score + topicAffinityScore(topic, topicAffinities),
     0,
   );
 
   return total / topics.length + authorScore;
+}
+
+function topicAffinityScore(
+  topic: string,
+  affinities: ReadonlyMap<string, number>,
+): number {
+  const exact = affinities.get(topic);
+
+  if (exact !== undefined) {
+    return exact;
+  }
+
+  let strongest = 0;
+
+  for (const [candidate, affinity] of affinities) {
+    const shorter = topic.length <= candidate.length ? topic : candidate;
+    const longer = shorter === topic ? candidate : topic;
+
+    if (shorter.length < 3 || !longer.startsWith(`${shorter}-`)) {
+      continue;
+    }
+
+    const similarity =
+      shorter.split('-').length /
+      Math.max(topic.split('-').length, candidate.split('-').length);
+
+    const weighted = affinity * similarity;
+
+    if (Math.abs(weighted) > Math.abs(strongest)) {
+      strongest = weighted;
+    }
+  }
+
+  return strongest;
 }
 
 export function getNrListData({
@@ -3740,48 +3774,6 @@ export function getNrListData({
   const selectedForYouEvents = rankedForYouEvents.slice(0, 25);
   const forYouEvents = selectedForYouEvents.map(({ event }) => event);
 
-  const visibleScoredEvents =
-    mode === 'for-you'
-      ? selectedForYouEvents
-      : [
-          ...new Map(
-            [...topicGroups, ...moodGroups]
-              .flatMap((group) => group.events)
-              .filter((event) => event.kind === 1 || event.kind === 30023)
-              .map((event) => [event.id, event]),
-          ).values(),
-        ].map((event) => ({
-          event,
-          score: scoreNrEventForYou({
-            event,
-            topicAffinities,
-            learnedAuthorAffinities,
-            explicitAuthorBiases,
-          }),
-        }));
-
-  const forYouScores = Object.fromEntries(
-    visibleScoredEvents.map(({ event, score }) => [event.id, score]),
-  );
-
-  const signalAggregates =
-    mode === 'signals'
-      ? buildNrSignalAggregates({
-          db,
-          signals: interestSignals,
-          topicAffinities,
-          learnedAuthorAffinities,
-        })
-      : { topicAggregates: [], authorAggregates: [] };
-
-  const archivedEventIds = (
-    db
-      .prepare('SELECT id FROM nr_events WHERE archived_at IS NOT NULL')
-      .all() as Array<{ id: string }>
-  ).map((row) => row.id);
-
-  const evaluatedImageCounts = countNrEvaluatedImagesByEvent(db);
-
   const visibleEvents = [
     ...topicGroups.flatMap((group) => group.events),
     ...moodGroups.flatMap((group) => group.events),
@@ -3804,6 +3796,61 @@ export function getNrListData({
 
     return event ? [event] : [];
   });
+
+  const visibleScoredEvents =
+    mode === 'for-you'
+      ? selectedForYouEvents
+      : [
+          ...new Map(
+            [...topicGroups, ...moodGroups]
+              .flatMap((group) => group.events)
+              .filter((event) => event.kind === 1 || event.kind === 30023)
+              .map((event) => [event.id, event]),
+          ).values(),
+        ].map((event) => ({
+          event,
+          score: scoreNrEventForYou({
+            event,
+            topicAffinities,
+            learnedAuthorAffinities,
+            explicitAuthorBiases,
+          }),
+        }));
+
+  const forYouScores = Object.fromEntries(
+    [
+      ...visibleScoredEvents,
+      ...(mode === 'for-you'
+        ? conversationContextEvents.map((event) => ({
+            event,
+            score: scoreNrEventForYou({
+              event,
+              topicAffinities,
+              learnedAuthorAffinities,
+              explicitAuthorBiases,
+            }),
+          }))
+        : []),
+    ].map(({ event, score }) => [event.id, score]),
+  );
+
+  const signalAggregates =
+    mode === 'signals'
+      ? buildNrSignalAggregates({
+          db,
+          signals: interestSignals,
+          topicAffinities,
+          learnedAuthorAffinities,
+        })
+      : { topicAggregates: [], authorAggregates: [] };
+
+  const archivedEventIds = (
+    db
+      .prepare('SELECT id FROM nr_events WHERE archived_at IS NOT NULL')
+      .all() as Array<{ id: string }>
+  ).map((row) => row.id);
+
+  const evaluatedImageCounts = countNrEvaluatedImagesByEvent(db);
 
   return {
     mode,

@@ -1,4 +1,4 @@
-import { SchedulerV1 } from '@src/capabilities/scheduler.v1';
+import { SchedulerV2 } from '@src/capabilities/scheduler.v2';
 import type { CapabilityResourceRef } from '@src/capabilities/types';
 import type { AgentBackendName } from '@src/db';
 import type { WebNode, WebNodeRoot } from '@src/web/ui-schema';
@@ -13,7 +13,10 @@ import {
 } from '../../settings';
 import type { NrCommandAdapterParams } from '../../types/adapter-params';
 
-import { NR_HOURLY_SCHEDULER_INPUT } from '../schedule/adapter';
+import {
+  loadNrSchedulerV2,
+  NR_HOURLY_SCHEDULER_INPUT,
+} from '../schedule/adapter';
 
 function text(value: string): WebNode {
   return { type: 'text', value };
@@ -213,13 +216,13 @@ async function loadSchedulerSettingsState(
     return null;
   }
 
-  const result = await params.storedCtx.capabilities.invoke({
-    operation: SchedulerV1.operations.show,
-    provider: resource.providerId,
-    input: { resourceId: resource.resourceId },
-  });
+  const output = await loadNrSchedulerV2(params);
 
-  if (result.status !== 'success') {
+  if (!output) {
+    if (!getNrSchedulerResource(params.db)) {
+      return null;
+    }
+
     return {
       resource,
       status: 'unavailable',
@@ -229,10 +232,10 @@ async function loadSchedulerSettingsState(
   }
 
   return {
-    resource: result.output.resource,
-    status: result.output.status,
-    enabled: result.output.enabled,
-    scheduleDescription: result.output.scheduleDescription,
+    resource: output.resource,
+    status: output.status,
+    enabled: output.enabled,
+    scheduleDescription: output.scheduleDescription,
   };
 }
 
@@ -718,7 +721,7 @@ function renderSettingsWeb({
                                     : 'View scheduled job',
                                 action: {
                                   type: 'capability',
-                                  operation: SchedulerV1.operations.show.id,
+                                  operation: SchedulerV2.operations.show.id,
                                   input: {
                                     resourceId: scheduler.resource.resourceId,
                                   },
@@ -1000,7 +1003,7 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
 
   if (hourlySchedulerRequested && !getNrSchedulerResource(params.db)) {
     const result = await params.storedCtx.capabilities.invoke({
-      operation: SchedulerV1.operations.create,
+      operation: SchedulerV2.operations.create,
       provider: 'auto',
       input: NR_HOURLY_SCHEDULER_INPUT,
     });

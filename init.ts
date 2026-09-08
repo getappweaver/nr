@@ -12,11 +12,13 @@ import {
   type PluginContext,
   type PluginInvocationContext,
 } from '@src/core/plugin';
+import { debug } from '@src/logger';
 import type { WebHandlerResult } from '@src/web/ui-schema';
 
 import { handleNrAdapter } from './adapter';
 import { aiDefinition } from './ai';
 import { getNrCommandDefinition, getNrHelpLines } from './commands/help/module';
+import { loadNrSchedulerV2 } from './commands/schedule/adapter';
 import { openDb } from './db';
 
 const pluginDir = import.meta.dir;
@@ -68,6 +70,19 @@ export const NrPlugin: BotPlugin = {
   onInit: (ctx: PluginContext) => {
     NrPluginContext = ctx;
     NrPluginDb = openDb();
+  },
+  onReady: async (ctx: PluginContext) => {
+    if (!NrPluginDb) {
+      return;
+    }
+
+    try {
+      await loadNrSchedulerV2({ db: NrPluginDb, storedCtx: ctx });
+    } catch (error) {
+      debug(
+        `nr schedule: failed to migrate stored scheduler task: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   },
   helpText: (helpAlias: string, prefix: string) => [
     `Nr: parse Nostr events, classify unread posts into tags/moods, and mark events read globally.`,

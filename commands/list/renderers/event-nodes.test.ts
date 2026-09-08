@@ -437,3 +437,62 @@ test('preserves an unfollowed intermediate reply as an on-demand placeholder', (
     { id: reply.id, readAction: null },
   ]);
 });
+
+test('renders embeds from a context-only conversation main post', () => {
+  const quoted = finalizeEvent(
+    { kind: 1, created_at: 50, content: 'quoted post', tags: [] },
+    generateSecretKey(),
+  );
+
+  const token = `nostr:${nip19.neventEncode({
+    id: quoted.id,
+    author: quoted.pubkey,
+    kind: quoted.kind,
+  })}`;
+
+  const root = finalizeEvent(
+    {
+      kind: 1,
+      created_at: 100,
+      content: `Root with quote ${token}`,
+      tags: [['e', quoted.id, '', 'mention', quoted.pubkey]],
+    },
+    generateSecretKey(),
+  );
+
+  const reply = finalizeEvent(
+    {
+      kind: 1,
+      created_at: 200,
+      content: 'reply',
+      tags: [
+        ['e', root.id, '', 'root', root.pubkey],
+        ['e', root.id, '', 'reply', root.pubkey],
+      ],
+    },
+    generateSecretKey(),
+  );
+
+  const storedReply = {
+    ...storedEvent(reply),
+    thread_context_json: JSON.stringify([root]),
+    referenced_events_json: JSON.stringify([quoted]),
+  };
+
+  const nodes = renderEvents({
+    events: [storedReply],
+    followedPubkeys: new Set([root.pubkey, reply.pubkey]),
+    conversationEvents: new Map(),
+    mode: 'for-you',
+  });
+
+  const post = nostrPostProps(nodes[0], root.id);
+
+  const embeds = post?.nostrEmbeds as
+    Record<string, Record<string, unknown>> | undefined;
+
+  expect(embeds?.[token]).toMatchObject({
+    id: quoted.id,
+    content: quoted.content,
+  });
+});

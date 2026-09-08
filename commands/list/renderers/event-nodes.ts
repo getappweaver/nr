@@ -1588,6 +1588,7 @@ function addressReferences({
 function nostrEmbeds({
   alias,
   event,
+  relatedEvents,
   profiles,
   interactions,
   translationTargetLanguage,
@@ -1595,7 +1596,8 @@ function nostrEmbeds({
   mode,
 }: {
   alias: string;
-  event: NrEvent;
+  event: NrEvent | NostrEvent;
+  relatedEvents?: NostrEvent[];
   profiles: Map<string, CachedProfile>;
   interactions: NrInteraction[];
   translationTargetLanguage: string;
@@ -1603,12 +1605,13 @@ function nostrEmbeds({
   mode: NrListMode;
 }) {
   const eventsById = new Map(
-    [...threadContextEvents(event), ...referencedEvents(event)].map(
-      (referencedEvent) => [referencedEvent.id, referencedEvent],
-    ),
+    ('raw_json' in event
+      ? [...threadContextEvents(event), ...referencedEvents(event)]
+      : (relatedEvents ?? [])
+    ).map((referencedEvent) => [referencedEvent.id, referencedEvent]),
   );
 
-  const embeds: Record<string, unknown> = {};
+  const embeds: Record<string, WebNostrPostReference> = {};
 
   for (const reference of extractEventReferences(event.content)) {
     const referencedEvent = eventsById.get(reference.id);
@@ -2990,6 +2993,17 @@ function conversationGroupNode({
     return [...parentReferences, ...(reference ? [reference] : [])];
   });
 
+  const mainRelatedEvents = [
+    ...new Map(
+      replies
+        .flatMap((reply) => [
+          ...threadContextEvents(reply),
+          ...referencedEvents(reply),
+        ])
+        .map((event) => [event.id, event]),
+    ).values(),
+  ];
+
   if (conversation.mainStored) {
     const node = eventNode({
       alias,
@@ -3067,7 +3081,16 @@ function conversationGroupNode({
           event: conversation.main,
           profiles,
           replyContext: [],
-          embeds: {},
+          embeds: nostrEmbeds({
+            alias,
+            event: conversation.main,
+            relatedEvents: mainRelatedEvents,
+            profiles,
+            interactions,
+            translationTargetLanguage,
+            sharePrefixes,
+            mode,
+          }),
           activityHeaders: activityHeadersFor({
             alias,
             activities: conversation.activities,
@@ -3750,7 +3773,7 @@ function profilePostNode({
   event: NostrEvent;
   profiles: Map<string, CachedProfile>;
   replyContext: WebNostrPostReference[];
-  embeds: Record<string, ReturnType<typeof profileReference>>;
+  embeds: Record<string, WebNostrPostReference>;
   activityHeaders: Array<{
     label: string;
     actorPubkey: string;
