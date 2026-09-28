@@ -56,7 +56,7 @@ test('image AI overrides persist and reset independently', () => {
 
   expect(saved.imageBackend).toBe('opencode');
   expect(saved.imageModel).toBe('image-model');
-  expect(saved.backend).toBe('cursor');
+  expect(saved.backend).toBe('opencode');
   expect(saved.model).toBe('text-model');
 
   const reset = resetNrSettings(db);
@@ -64,5 +64,31 @@ test('image AI overrides persist and reset independently', () => {
   expect(reset.imageBackend).toBeNull();
   expect(reset.imageModel).toBeNull();
 
+  db.close();
+});
+
+test('mode defaults to LLM and Jev credentials stay out of settings views', () => {
+  const db = new Database(':memory:');
+  createNrSettingsTable(db);
+  const initial = getNrSettings(db);
+  expect(initial.mode).toBe('llm');
+  expect(initial.jevHasApiKey).toBe(false);
+  expect(initial.jevTopicBatchSize).toBe(10);
+
+  const saved = saveNrSettings({
+    ...initial,
+    db,
+    mode: 'classifier',
+    jevApiKey: 'secret',
+    jevTopicBatchSize: 20,
+  });
+
+  expect(saved.mode).toBe('classifier');
+  expect(saved.jevHasApiKey).toBe(true);
+  expect(getNrSettings(db).jevTopicBatchSize).toBe(20);
+  expect(JSON.stringify(saved)).not.toContain('secret');
+  expect(resetNrSettings(db).mode).toBe('llm');
+  expect(getNrSettings(db).jevTopicBatchSize).toBe(10);
+  expect(getNrSettings(db).jevHasApiKey).toBe(false);
   db.close();
 });

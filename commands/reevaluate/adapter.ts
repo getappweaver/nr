@@ -147,6 +147,6 @@ export async function adaptReevaluateCommand(
     `Reevaluated: ${event.id}`,
     `Topics: ${event.topics.join(', ')}`,
     `Moods: ${event.moods.join(', ')}`,
-    `Summary: ${event.summary}`,
+    ...(event.summary.trim() ? [`Summary: ${event.summary}`] : []),
   ].join('\n');
 }

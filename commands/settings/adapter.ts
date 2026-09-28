@@ -10,6 +10,7 @@ import {
   saveNrSchedulerResource,
   type NrSignalReviewMode,
   saveNrSettings,
+  type NrEvaluationMode,
 } from '../../settings';
 import type { NrCommandAdapterParams } from '../../types/adapter-params';
 
@@ -71,11 +72,11 @@ function parseBackend(value: unknown): AgentBackendName | null | undefined {
     return null;
   }
 
-  if (value === 'cursor' || value === 'opencode') {
-    return value;
+  if (value === 'opencode') {
+    return 'opencode';
   }
 
-  throw new Error('backend must be cursor or opencode');
+  throw new Error('backend must be opencode');
 }
 
 function parseSignalReviewMode(
@@ -152,6 +153,13 @@ function signalReviewSelectNodes(
 function formatSettings(settings: ReturnType<typeof getNrSettings>): string {
   return [
     'Nostr radar settings:',
+    `Evaluation mode: ${settings.mode}`,
+    `Jev API base: ${settings.jevApiBase}`,
+    `Jev API key: ${settings.jevHasApiKey ? 'configured' : 'not configured'}`,
+    `Jev topics: ${settings.jevTopics}`,
+    `Jev choices per topic/mood question: ${settings.jevTopicBatchSize}`,
+    `Jev moods: ${settings.jevMoods}`,
+    `Jev languages: ${settings.jevLanguages}`,
     `AI Text backend: ${settings.backend ?? '(default)'}`,
     `AI Text model: ${settings.model ?? '(default)'}`,
     `AI Image backend: ${settings.imageBackend ?? '(AI Text)'}`,
@@ -181,7 +189,7 @@ function formatSettings(settings: ReturnType<typeof getNrSettings>): string {
       SIGNAL_REVIEW_MODE_LABELS[settings.repostQuoteSignalReviewMode]
     }`,
     '',
-    'Instructions:',
+    'LLM instructions:',
     settings.instructions,
   ].join('\n');
 }
@@ -274,13 +282,11 @@ async function renderSettingsResult({
     textEffectiveModel: params.storedCtx.agent.getEffectiveModel({
       backend: settings.backend,
       model: settings.model,
-      mode: null,
       workspaceTarget: null,
     }),
     imageFallbackModel: params.storedCtx.agent.getEffectiveModel({
       backend: imageBackend,
       model: settings.model,
-      mode: null,
       workspaceTarget: null,
     }),
     agentOnly: parseBooleanOption(params.parsed.options.agent),
@@ -363,7 +369,7 @@ function renderSettingsWeb({
               {
                 formFieldName: 'backend',
                 value: settings.backend ?? 'default',
-                choices: ['default', 'cursor', 'opencode'],
+                choices: ['default', 'opencode'],
                 choiceLabels: {
                   default: `current (${defaults.backend})`,
                   cursor: 'cursor',
@@ -394,7 +400,7 @@ function renderSettingsWeb({
               {
                 formFieldName: 'image_backend',
                 value: settings.imageBackend ?? 'default',
-                choices: ['default', 'cursor', 'opencode'],
+                choices: ['default', 'opencode'],
                 choiceLabels: {
                   default: imageBackendDefaultLabel,
                   cursor: 'cursor',
@@ -439,6 +445,18 @@ function renderSettingsWeb({
         {
           className: 'web-form web-form--stacked',
           formOptionFieldNames: [
+            'mode',
+            'jev_api_key',
+            'jev_api_base',
+            'jev_topics',
+            'jev_topic_batch_size',
+            'jev_moods',
+            'jev_languages',
+            'jev_state_instructions',
+            'jev_topic_question',
+            'jev_mood_question',
+            'jev_language_question',
+            'jev_relevance_question',
             'instructions',
             'event_share_prefix',
             'profile_share_prefix',
@@ -471,8 +489,21 @@ function renderSettingsWeb({
         },
         [
           el('text', { weight: 'semibold' }, [text('Nostr radar settings')]),
+          el('text', { weight: 'semibold', size: 'sm' }, [
+            text('Evaluation mode'),
+          ]),
+          el(
+            'select',
+            {
+              formFieldName: 'mode',
+              value: settings.mode,
+              choices: ['llm', 'classifier'],
+              choiceLabels: { llm: 'LLM', classifier: 'Jev classifier' },
+            },
+            [],
+          ),
           el('tabs', { defaultActiveTabId: 'nr-settings-ai' }, [
-            el('tabPanel', { id: 'nr-settings-ai', label: 'AI' }, [
+            el('tabPanel', { id: 'nr-settings-ai', label: 'LLM' }, [
               el('text', { weight: 'semibold', size: 'sm' }, [
                 text('Classification instructions'),
               ]),
@@ -570,6 +601,94 @@ function renderSettingsWeb({
                 },
                 [],
               ),
+            ]),
+            el('tabPanel', { id: 'nr-settings-jev', label: 'Jev' }, [
+              el('text', { tone: 'muted', size: 'sm' }, [
+                text(
+                  'Classifies up to 200 candidate topics from manual preferences, event tags, signals, and this list. Topic and mood choices are split across questions in one Jev request. No summary is generated.',
+                ),
+              ]),
+              el('text', { weight: 'semibold', size: 'sm' }, [
+                text(
+                  `API key (${settings.jevHasApiKey ? 'configured' : 'not configured'})`,
+                ),
+              ]),
+              el(
+                'textField',
+                {
+                  formFieldName: 'jev_api_key',
+                  inputPlaceholder:
+                    'Leave blank to keep current key; enter reset to clear',
+                  value: '',
+                },
+                [],
+              ),
+              el('text', { weight: 'semibold', size: 'sm' }, [
+                text('API base'),
+              ]),
+              el(
+                'textField',
+                { formFieldName: 'jev_api_base', value: settings.jevApiBase },
+                [],
+              ),
+              ...(
+                [
+                  ['jev_topics', 'Candidate topics', settings.jevTopics],
+                  ['jev_moods', 'Candidate moods', settings.jevMoods],
+                  [
+                    'jev_languages',
+                    'Candidate languages (ISO 639-1)',
+                    settings.jevLanguages,
+                  ],
+                ] as const
+              ).flatMap(([field, label, value]) => [
+                el('text', { weight: 'semibold', size: 'sm' }, [text(label)]),
+                el('textArea', { formFieldName: field, value, maxRows: 5 }, []),
+              ]),
+              el('text', { weight: 'semibold', size: 'sm' }, [
+                text('Choices per topic or mood question (1–50)'),
+              ]),
+              el(
+                'textField',
+                {
+                  formFieldName: 'jev_topic_batch_size',
+                  value: String(settings.jevTopicBatchSize),
+                  inputPlaceholder: '10',
+                },
+                [],
+              ),
+              ...(
+                [
+                  [
+                    'jev_state_instructions',
+                    'State guidance',
+                    settings.jevStateInstructions,
+                  ],
+                  [
+                    'jev_topic_question',
+                    'Topic question',
+                    settings.jevTopicQuestion,
+                  ],
+                  [
+                    'jev_mood_question',
+                    'Mood question',
+                    settings.jevMoodQuestion,
+                  ],
+                  [
+                    'jev_language_question',
+                    'Language question',
+                    settings.jevLanguageQuestion,
+                  ],
+                  [
+                    'jev_relevance_question',
+                    'Relevance question',
+                    settings.jevRelevanceQuestion,
+                  ],
+                ] as const
+              ).flatMap(([field, label, value]) => [
+                el('text', { weight: 'semibold', size: 'sm' }, [text(label)]),
+                el('textArea', { formFieldName: field, value, maxRows: 5 }, []),
+              ]),
             ]),
             el('tabPanel', { id: 'nr-settings-signals', label: 'Signals' }, [
               el('text', { weight: 'semibold', size: 'sm' }, [
@@ -814,6 +933,81 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
     );
   }
 
+  const rawMode = params.parsed.options.mode;
+
+  if (rawMode !== undefined && rawMode !== 'llm' && rawMode !== 'classifier') {
+    throw new Error('Mode must be llm or classifier.');
+  }
+
+  const mode = rawMode as NrEvaluationMode | undefined;
+  const jevApiKey = asOptionalStringOverride(params.parsed.options.jev_api_key);
+
+  const jevApiBase = asOptionalStringOverride(
+    params.parsed.options.jev_api_base,
+  );
+
+  if (jevApiBase !== undefined) {
+    try {
+      const url = new URL(jevApiBase ?? '');
+
+      if (
+        url.protocol !== 'https:' &&
+        !(
+          url.protocol === 'http:' &&
+          ['localhost', '127.0.0.1'].includes(url.hostname)
+        )
+      ) {
+        throw new Error('invalid protocol');
+      }
+    } catch {
+      throw new Error(
+        'Jev API base must be an HTTPS URL (HTTP allowed for localhost).',
+      );
+    }
+  }
+
+  const jevFields = {
+    jevTopics: asOptionalStringOverride(params.parsed.options.jev_topics),
+    jevMoods: asOptionalStringOverride(params.parsed.options.jev_moods),
+    jevLanguages: asOptionalStringOverride(params.parsed.options.jev_languages),
+    jevStateInstructions: asOptionalStringOverride(
+      params.parsed.options.jev_state_instructions,
+    ),
+    jevTopicQuestion: asOptionalStringOverride(
+      params.parsed.options.jev_topic_question,
+    ),
+    jevMoodQuestion: asOptionalStringOverride(
+      params.parsed.options.jev_mood_question,
+    ),
+    jevLanguageQuestion: asOptionalStringOverride(
+      params.parsed.options.jev_language_question,
+    ),
+    jevRelevanceQuestion: asOptionalStringOverride(
+      params.parsed.options.jev_relevance_question,
+    ),
+  };
+
+  const jevTopicBatchSizeOption = params.parsed.options.jev_topic_batch_size;
+  let jevTopicBatchSize: number | undefined;
+
+  if (
+    jevTopicBatchSizeOption !== undefined &&
+    jevTopicBatchSizeOption !== null &&
+    jevTopicBatchSizeOption !== ''
+  ) {
+    jevTopicBatchSize = Number(jevTopicBatchSizeOption);
+
+    if (
+      !Number.isInteger(jevTopicBatchSize) ||
+      jevTopicBatchSize < 1 ||
+      jevTopicBatchSize > 50
+    ) {
+      throw new Error(
+        'Jev choices per question must be an integer from 1 to 50.',
+      );
+    }
+  }
+
   const backend = parseBackend(params.parsed.options.backend);
   const modelValue = asOptionalStringOverride(params.parsed.options.model);
   const model = modelValue === 'reset' ? null : modelValue;
@@ -909,6 +1103,11 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
   );
 
   const hasUpdates =
+    mode !== undefined ||
+    (jevApiKey !== undefined && jevApiKey !== null) ||
+    jevApiBase !== undefined ||
+    Object.values(jevFields).some((value) => value !== undefined) ||
+    jevTopicBatchSize !== undefined ||
     backend !== undefined ||
     model !== undefined ||
     imageBackend !== undefined ||
@@ -949,8 +1148,35 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
 
   const current = getNrSettings(params.db);
 
+  if (
+    (mode ?? current.mode) === 'classifier' &&
+    !current.jevHasApiKey &&
+    !jevApiKey?.trim()
+  ) {
+    throw new Error('Set a Jev API key before enabling classifier mode.');
+  }
+
+  if ((mode ?? current.mode) === 'classifier' && jevApiKey === 'reset') {
+    throw new Error('A Jev API key is required for classifier mode.');
+  }
+
   const next = saveNrSettings({
     db: params.db,
+    mode: mode ?? current.mode,
+    jevApiKey: jevApiKey === 'reset' ? null : (jevApiKey ?? undefined),
+    jevApiBase: jevApiBase ?? current.jevApiBase,
+    jevTopics: jevFields.jevTopics ?? current.jevTopics,
+    jevTopicBatchSize: jevTopicBatchSize ?? current.jevTopicBatchSize,
+    jevMoods: jevFields.jevMoods ?? current.jevMoods,
+    jevLanguages: jevFields.jevLanguages ?? current.jevLanguages,
+    jevStateInstructions:
+      jevFields.jevStateInstructions ?? current.jevStateInstructions,
+    jevTopicQuestion: jevFields.jevTopicQuestion ?? current.jevTopicQuestion,
+    jevMoodQuestion: jevFields.jevMoodQuestion ?? current.jevMoodQuestion,
+    jevLanguageQuestion:
+      jevFields.jevLanguageQuestion ?? current.jevLanguageQuestion,
+    jevRelevanceQuestion:
+      jevFields.jevRelevanceQuestion ?? current.jevRelevanceQuestion,
     backend: backend === undefined ? current.backend : backend,
     model: model === undefined ? current.model : model,
     imageBackend:

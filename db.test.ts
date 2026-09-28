@@ -11,6 +11,7 @@ import {
   getNrListData,
   markEventRead,
   markEventState,
+  markTaggedEventsState,
   parseAndStoreEvent,
 } from './db';
 import { createNrSettingsTable } from './settings';
@@ -96,6 +97,34 @@ test('shared-cache seeding preserves NR classification and read/archive state', 
   expect(seedCalls).toHaveLength(2);
 
   expect(JSON.parse(stored!.thread_context_json)).toEqual([{ id: parent.id }]);
+
+  db.close();
+});
+
+test('marking a tag read changes only its unread events', () => {
+  const db = new Database(':memory:');
+
+  createNrTable(db);
+
+  const insertEvent = db.prepare(
+    'INSERT INTO nr_events (id, pubkey, kind, event_created_at, content, raw_json, inserted_at) VALUES (?, ?, 1, 1, ?, ?, 1)',
+  );
+
+  for (const id of ['one', 'two']) {
+    insertEvent.run(id, 'author', id, '{}');
+  }
+
+  db.run(
+    "INSERT INTO nr_event_tags (event_id, type, tag) VALUES ('one', 'topic', 'nostr'), ('two', 'topic', 'bitcoin')",
+  );
+
+  expect(
+    markTaggedEventsState({ db, type: 'topic', tag: 'nostr', state: 'read' })
+      .eventCount,
+  ).toBe(1);
+
+  expect(getNr(db, 'one')?.read_at).not.toBeNull();
+  expect(getNr(db, 'two')?.read_at).toBeNull();
 
   db.close();
 });

@@ -10,7 +10,7 @@ import { WebNostrPostElementPropsSchema } from '@src/web/ui-schema';
 
 import type { NrEvent } from '../../shared/types';
 
-import { groupEventNodes } from './event-nodes';
+import { groupEventNodes, sectionNode } from './event-nodes';
 
 function storedEvent(event: Event, readAt: number | null = null): NrEvent {
   return {
@@ -169,6 +169,93 @@ function renderEvents({
     conversationContextEvents: conversationEvents,
   });
 }
+
+test('tag read shortcut removes the group immediately and reconciles the list', () => {
+  const event = finalizeEvent(
+    { kind: 1, created_at: 1, content: 'note', tags: [] },
+    generateSecretKey(),
+  );
+
+  const section = sectionNode({
+    alias: 'nr',
+    title: 'Topics',
+    type: 'topic',
+    groups: [
+      {
+        type: 'topic',
+        tag: 'nostr',
+        unreadCount: 1,
+        events: [storedEvent(event)],
+      },
+    ],
+    profiles: new Map(),
+    interactions: [],
+    localPreferences: new Map(),
+    authorPreferences: new Map(),
+    sharePrefixes: { nevent: 'nostr://', nprofile: 'nostr://' },
+    translationTargetLanguage: 'en',
+    rankingScores: {},
+    archiveSignalReviewMode: 'ask',
+    likeSignalReviewMode: 'ask',
+    replySignalReviewMode: 'ask',
+    repostQuoteSignalReviewMode: 'ask',
+    resolveReferencesAutomatically: false,
+    mode: 'timeline',
+    selectedTimeRanges: [],
+    archivedIds: new Set(),
+    evaluatedImageCounts: {},
+    followedPubkeys: new Set(),
+    conversationContextEvents: new Map(),
+  });
+
+  function shortcut(value: unknown): Record<string, unknown> | null {
+    if (!value || typeof value !== 'object') {
+      return null;
+    }
+
+    const record = value as Record<string, unknown>;
+    const props = record.props as Record<string, unknown> | undefined;
+
+    if (props?.className === 'nr-tag-read-shortcut') {
+      return props.action as Record<string, unknown>;
+    }
+
+    for (const child of Object.values(record)) {
+      if (Array.isArray(child)) {
+        for (const item of child) {
+          const found = shortcut(item);
+
+          if (found) {
+            return found;
+          }
+        }
+      } else {
+        const found = shortcut(child);
+
+        if (found) {
+          return found;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  const action = shortcut(section);
+
+  expect(action).toMatchObject({
+    type: 'clientAction',
+    action: 'web.optimisticCommand',
+    payload: {
+      mutations: [{ type: 'removeEntity', entityKey: 'nr-topic:nostr' }],
+      command: {
+        subcommand: 'mark',
+        options: { type: 'topic', tag: 'nostr', read: true },
+      },
+    },
+    refresh: { subcommand: 'list', options: { local_mutation: true } },
+  });
+});
 
 test('groups same-slot NIP-10 replies and reads visible members together', () => {
   const parent = finalizeEvent(

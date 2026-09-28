@@ -1,5 +1,4 @@
 import type { CapabilityResourceRef } from '@src/capabilities/types';
-import type { PluginAgentDefaults } from '@src/core/plugin';
 import type { CachedProfile } from '@src/db';
 import type {
   WebNode,
@@ -126,25 +125,11 @@ const nrListStylesheet = {
 type RenderNrListWebProps = {
   alias: string;
   listData: NrListData;
-  agentDefaults: PluginAgentDefaults;
   effectiveModel: string;
   schedulerResource: CapabilityResourceRef | null;
   profiles: Map<string, CachedProfile>;
   followedPubkeys: Set<string>;
 };
-
-function agentSettingsAction(alias: string) {
-  return {
-    type: 'command' as const,
-    command: alias,
-    subcommand: 'settings',
-    arguments: {},
-    options: { agent: true },
-    surface: 'modal' as const,
-    modalTitle: 'Nostr radar AI settings',
-    recordInTimeline: false,
-  };
-}
 
 function settingsAction(alias: string) {
   return {
@@ -342,7 +327,6 @@ function listModeSwitch({
 export function renderNrListWeb({
   alias,
   listData,
-  agentDefaults,
   effectiveModel,
   schedulerResource,
   profiles,
@@ -353,8 +337,6 @@ export function renderNrListWeb({
 
   const translationTargetLanguage =
     listData.settings.translationTargetLanguage ?? 'en';
-
-  const effectiveBackend = listData.settings.backend ?? agentDefaults.backend;
 
   const fetchCoverage =
     listData.mode === 'timeline' ? fetchCoverageBar(alias, listData) : null;
@@ -456,13 +438,15 @@ export function renderNrListWeb({
           selectedTimeRanges: listData.selectedTimeRanges,
         }),
         el('row', { gap: 'xs', itemAlign: 'center' }, [
-          text(`Backend ${effectiveBackend}, Model ${effectiveModel}`),
+          text(
+            `Mode ${listData.settings.mode === 'classifier' ? 'Jev classifier' : 'LLM'}, Model ${listData.settings.mode === 'classifier' ? 'jev-latest' : effectiveModel}`,
+          ),
           el(
             'button',
             {
               label: 'Manage',
               className: 'web-button--link',
-              action: agentSettingsAction(alias),
+              action: settingsAction(alias),
             },
             [],
           ),

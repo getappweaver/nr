@@ -280,6 +280,7 @@ function safeParseTags(raw: string | null): {
   topics: string[];
   moods: string[];
   language: string;
+  relevanceScore?: number;
 } {
   if (!raw) {
     return { topics: [], moods: [], language: 'und' };
@@ -293,6 +294,13 @@ function safeParseTags(raw: string | null): {
       moods: Array.isArray(parsed.moods) ? parsed.moods : [],
       language:
         typeof parsed.language === 'string' ? parsed.language.trim() : 'und',
+      relevanceScore:
+        typeof parsed.relevanceScore === 'number' &&
+        Number.isFinite(parsed.relevanceScore) &&
+        parsed.relevanceScore >= 0 &&
+        parsed.relevanceScore <= 3
+          ? parsed.relevanceScore
+          : undefined,
     };
   } catch {
     return { topics: [], moods: [], language: 'und' };
@@ -475,6 +483,11 @@ export function createNrTable(db: DatabaseType): void {
       tag      TEXT NOT NULL,
       PRIMARY KEY (event_id, type, tag)
     )
+  `);
+
+  db.run(`
+    CREATE INDEX IF NOT EXISTS idx_nr_event_tags_type_tag_event
+    ON nr_event_tags(type, tag, event_id)
   `);
 
   db.run(`
@@ -1221,6 +1234,7 @@ type RecordReviewedNrInterestSignalProps = {
   type: NrInterestSignalType;
   createdAt: number;
   topics: string[];
+  moods?: string[];
   authorPubkey: string | null;
   source: NrInterestSignal['source'];
 };
@@ -1231,6 +1245,7 @@ export function recordReviewedNrInterestSignal({
   type,
   createdAt,
   topics,
+  moods,
   authorPubkey,
   source,
 }: RecordReviewedNrInterestSignalProps): NrInterestSignal {
@@ -1253,7 +1268,9 @@ export function recordReviewedNrInterestSignal({
       type,
       NR_INTEREST_WEIGHTS[type],
       JSON.stringify(topics),
-      JSON.stringify([]),
+      JSON.stringify(
+        moods ?? interestTags({ db, targetEventId, type: 'mood' }),
+      ),
       normalizedAuthorPubkey,
       source,
       createdAt,
@@ -1440,29 +1457,61 @@ export function recordNrInterestSignal({
   const topics =
     providedTopics ?? interestTags({ db, targetEventId, type: 'topic' });
 
-  if (providedMoods === null) {
-    void interestTags({ db, targetEventId, type: 'mood' });
-  }
-
   return recordReviewedNrInterestSignal({
     db,
     targetEventId,
     type,
     createdAt,
     topics,
+    moods: providedMoods ?? interestTags({ db, targetEventId, type: 'mood' }),
     authorPubkey: null,
     source,
   });
 }
 
 export function listNrInterestSignals(db: DatabaseType): NrInterestSignal[] {
-  return (
+  const signals = (
     db
       .prepare(
         'SELECT * FROM nr_interest_signals ORDER BY updated_at DESC, target_event_id ASC',
       )
       .all() as InterestSignalRow[]
   ).map(rowToNrInterestSignal);
+
+  if (!signals.some((signal) => signal.moods.length === 0)) {
+    return signals;
+  }
+
+  // Older signals recorded [] even when the target event had classified moods.
+  const moodRows = db
+    .prepare(
+      `SELECT DISTINCT signal.target_event_id AS target_event_id, tag.tag AS tag
+       FROM nr_interest_signals signal
+       JOIN nr_event_tags tag ON tag.event_id = signal.target_event_id AND tag.type = 'mood'
+       UNION
+       SELECT DISTINCT signal.target_event_id AS target_event_id, tag.tag AS tag
+       FROM nr_interest_signals signal
+       JOIN nr_activity_targets activity ON activity.target_event_id = signal.target_event_id
+       JOIN nr_event_tags tag ON tag.event_id = activity.activity_event_id AND tag.type = 'mood'`,
+    )
+    .all() as Array<{ target_event_id: string; tag: string }>;
+
+  const moodsByTarget = new Map<string, string[]>();
+
+  for (const row of moodRows) {
+    const moods = moodsByTarget.get(row.target_event_id) ?? [];
+
+    moods.push(row.tag);
+    moodsByTarget.set(row.target_event_id, moods);
+  }
+
+  return signals.map((signal) => ({
+    ...signal,
+    moods:
+      signal.moods.length > 0
+        ? signal.moods
+        : (moodsByTarget.get(signal.targetEventId) ?? []),
+  }));
 }
 
 export function clearSeededNrInterestSignals(db: DatabaseType): number {
@@ -2576,10 +2625,10 @@ export function markTaggedEventsState({
 
     const rows = db
       .prepare(
-        `SELECT DISTINCT e.id AS id
-         FROM nr_events e
-         JOIN nr_event_tags t ON t.event_id = e.id
-         WHERE e.${column} ${predicate} AND t.type = ? AND t.tag = ?`,
+        `SELECT e.id AS id
+          FROM nr_event_tags t
+          JOIN nr_events e ON e.id = t.event_id
+          WHERE t.type = ? AND t.tag = ? AND e.${column} ${predicate}`,
       )
       .all(type, tag) as Array<{ id: string }>;
 
@@ -3537,8 +3586,15 @@ export function scoreNrEventForYou({
     (learnedAuthorAffinities.get(normalizedPubkey) ?? 0) +
     (explicitAuthorBiases.get(normalizedPubkey) ?? 0);
 
+  const savedClassification = safeParseTags(event.classification_json);
+
+  const relevanceBias =
+    savedClassification.relevanceScore === undefined
+      ? 0
+      : (savedClassification.relevanceScore - 1) * 2;
+
   if (topics.length === 0) {
-    return authorScore;
+    return authorScore + relevanceBias;
   }
 
   const total = topics.reduce(
@@ -3546,7 +3602,7 @@ export function scoreNrEventForYou({
     0,
   );
 
-  return total / topics.length + authorScore;
+  return total / topics.length + authorScore + relevanceBias;
 }
 
 function topicAffinityScore(

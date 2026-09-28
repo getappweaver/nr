@@ -278,11 +278,9 @@ async function runListCommand(
         renderNrListWeb({
           alias: params.alias,
           listData,
-          agentDefaults: params.storedCtx.agent.getDefaults(),
           effectiveModel: params.storedCtx.agent.getEffectiveModel({
             backend: listData.settings.backend,
             model: listData.settings.model,
-            mode: null,
             workspaceTarget: null,
           }),
           schedulerResource: getNrSchedulerResource(params.db),

@@ -595,7 +595,8 @@ async function runFetchEvaluate({
   let skippedRelated = 0;
   let deferredIncomplete = 0;
   let failedEvents = 0;
-  let evaluatedByAi = 0;
+  let evaluatedByJev = 0;
+  let evaluatedByLlm = 0;
   let evaluatedByFallback = 0;
   let evaluatedProgress = 0;
   const eventErrors: string[] = [];
@@ -944,13 +945,18 @@ async function runFetchEvaluate({
             };
 
         debug(
-          `nr fetch-latest: classified ${parsed.data.id} in ${Date.now() - classificationStartedAt}ms with ${classification.model}`,
+          `nr fetch-latest: classified ${parsed.data.id} in ${Date.now() - classificationStartedAt}ms using ${classification.evaluationMode === 'classifier' ? 'Jev' : classification.model === 'activity' ? 'activity metadata' : 'LLM'} (${classification.model})`,
         );
 
-        if (classification.model.includes(':fallback')) {
+        if (classificationEvent && classification.model.includes(':fallback')) {
           evaluatedByFallback += 1;
-        } else {
-          evaluatedByAi += 1;
+        } else if (
+          classificationEvent &&
+          classification.evaluationMode === 'classifier'
+        ) {
+          evaluatedByJev += 1;
+        } else if (classificationEvent) {
+          evaluatedByLlm += 1;
         }
 
         if (classification.skip) {
@@ -1085,7 +1091,7 @@ async function runFetchEvaluate({
     explicitSince === null && explicitUntil === null
       ? 'Fetched latest notes from follows.'
       : 'Fetched notes from follows.',
-    `Summary: ${stored} stored, ${skippedByClassifier + skippedCached + skippedPreviously + skippedRelated + deferredIncomplete + invalid} skipped/deferred, ${failedEvents} failed, ${evaluatedByAi} evaluated by AI${evaluatedByFallback > 0 ? `, ${evaluatedByFallback} fallback-classified` : ''}.`,
+    `Summary: ${stored} stored, ${skippedByClassifier + skippedCached + skippedPreviously + skippedRelated + deferredIncomplete + invalid} skipped/deferred, ${failedEvents} failed, ${evaluatedByJev} evaluated by Jev, ${evaluatedByLlm} evaluated by LLM${evaluatedByFallback > 0 ? `, ${evaluatedByFallback} fallback-classified` : ''}.`,
     `Authors used: ${authors.length}/${follows.length}`,
     `Window: ${formatTimestamp(since)} → ${formatTimestamp(until)}`,
     explicitSince === null ? `Since hours: ${sinceHours}` : null,
@@ -1103,13 +1109,14 @@ async function runFetchEvaluate({
     `Invalid events: ${invalid}`,
     `Deferred incomplete context: ${deferredIncomplete}`,
     `Failed event processing: ${failedEvents}`,
-    `Evaluated by AI: ${evaluatedByAi}`,
+    `Evaluated by Jev: ${evaluatedByJev}`,
+    `Evaluated by LLM: ${evaluatedByLlm}`,
     `Evaluated by fallback: ${evaluatedByFallback}`,
     ...eventErrors.slice(0, 5).map((error) => `Event error: ${error}`),
     eventErrors.length > 5
       ? `Event errors omitted: ${eventErrors.length - 5}`
       : null,
-    `Stored/evaluated: ${stored}`,
+    `Newly stored: ${stored}`,
     storedIds.length > 0
       ? `New IDs: ${storedIds.join(', ')}`
       : 'New IDs: (none)',

@@ -43,25 +43,28 @@ Nostr Radar is an AppWeaver plugin for fetching, classifying, storing, and revie
 - `ai.ts` - Exposes the Nostr Radar AI tool definition, database opener, execution bridge, and agent instructions.
 - `CHANGELOG.md` - Lists tagged Nostr Radar release changes.
 - `classifier-ai.ts` - Runs configured agent-backed event classification with contextual references, reactions, and heuristic fallback.
+- `classifier-jev.ts` - Evaluates cloned topic and mood Choice questions over bounded candidate subsets (up to 200 topics) alongside language and relevance in one Jev request; keeps credentials server-side and leaves summaries empty.
+- `classifier-jev.test.ts` - Covers typed Jev evaluation and missing-credential behavior.
 - `classifier.ts` - Provides heuristic classification plus prompt construction and resilient parsing, including normalized primary-language codes, for AI classification results.
 - `context.ts` - Builds compact classifier interest context from explicit topic preferences and separately ranked positive/negative interest signals.
 - `db.test.ts` - Covers event storage behavior around shared-cache seeding, classification reuse, and read/archive preservation.
-- `db.ts` - Owns the plugin SQLite schema and persistence APIs for events, classification, fetching, visible historical unread-slot aggregation, preferences, preference-aware taxonomy, and feeds.
+- `db.ts` - Owns the plugin SQLite schema and persistence APIs for events, classification, fetching, visible historical unread-slot aggregation, preferences, preference-aware taxonomy, and feeds; indexes tag lookups for bulk read actions and list groups, and combines stored Jev relevance with For You scoring.
 - `definition.ts` - Defines the structured `/nr` command and its available subcommands.
 - `format.ts` - Formats Nostr Radar lists and event details for text responses.
+- `image-evaluation.ts` - Prepares and caches optional vision descriptions with the selected image model for LLM evaluation.
 - `init.ts` - Registers and initializes the Nostr Radar plugin, command handler, help text, database, and AI definition.
 - `LICENSE` - Places the plugin in the public domain under the Unlicense.
 - `nostr-resolution.ts` - Seeds and hydrates Nostr events through the shared resolution service and traverses resolved reference graphs.
 - `package.json` - Declares plugin metadata, compatibility requirements, and maintenance scripts.
 - `README.md` - Template placeholder for user-facing plugin documentation.
 - `references.ts` - Extracts Nostr event, profile, and address references from content and fetches referenced events.
-- `settings.ts` - Defines persisted classification, sharing, and concurrency settings, including default interest guidance and BCP 47 language output instructions.
+- `settings.ts` - Defines persisted LLM and Jev evaluation modes, candidate catalogs, private Jev credentials, sharing, and concurrency settings.
 - `thread-context.ts` - Extracts NIP-10 thread references and fetches their context events.
 
 ## Notes
 - Plugin data is stored in a local SQLite database.
 - The `/nr` command surface is defined through subcommand modules.
-- Classification can use heuristic fallback or the configured agent backend.
+- LLM mode uses the configured agent backend and heuristic fallback. Classifier mode uses manual, event-tag, signal, and configured candidates; topic and mood Choice questions each receive up to 10 candidates by default and run together in one Jev request per event. The hourly fetch job reads the current mode on each run. Signal moods are captured for new signals and recovered from classified target events for older signals.
 
 ## Subdirectories
 - `commands/` - Nostr Radar command layer organized by subcommand, including contracts, execution, and rendering.

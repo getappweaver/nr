@@ -113,6 +113,8 @@ export async function adaptParseCommand(
     `Topics: ${result.event.topics.join(', ')}`,
     `Moods: ${result.event.moods.join(', ')}`,
     `Model: ${result.event.model}`,
-    `Summary: ${result.event.summary}`,
+    ...(result.event.summary.trim()
+      ? [`Summary: ${result.event.summary}`]
+      : []),
   ].join('\n');
 }

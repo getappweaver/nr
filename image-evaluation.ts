@@ -333,11 +333,8 @@ export async function describeEventImages({
       const result = await agent.run({
         prompt,
         sessionId: null,
-        backend: imageAgent.backend,
-        provider: null,
-        model: imageAgent.model,
-        mode: null,
         workspaceTarget: null,
+        modelId: imageAgent.model,
         cwd: null,
         onAgentStreamChunk: null,
         abortSignal,

@@ -10,7 +10,7 @@ children:
 # commands/settings
 
 ## Purpose
-Defines the `settings`/`config` subcommand for configuring nr parse AI behavior and related sharing and concurrency options. It supports both text-command output and a web settings form.
+Defines the `settings`/`config` subcommand for choosing LLM or Jev classifier evaluation, configuring candidate catalogs and questions, and related sharing and concurrency options. It supports both text-command output and a web settings form.
 
 ## Files
 - `adapter.ts` - Handles settings reads, validation, persistence, resets, and web/text rendering for the subcommand.
@@ -18,4 +18,5 @@ Defines the `settings`/`config` subcommand for configuring nr parse AI behavior 
 
 ## Notes
 - Settings persist through the parent settings module.
+- Jev credentials are write-only in the form; settings output reports only whether a key is configured. The Jev tab controls choices per topic or mood question (default 10, range 1–50); all questions share one request.
 - Empty string overrides clear nullable backend/model values.

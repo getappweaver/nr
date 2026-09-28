@@ -209,7 +209,9 @@ export async function adaptListParseSingleCommand(
       `ID: ${result.event.id}`,
       `Topics: ${result.event.topics.join(', ')}`,
       `Moods: ${result.event.moods.join(', ')}`,
-      `Summary: ${result.event.summary}`,
+      ...(result.event.summary.trim()
+        ? [`Summary: ${result.event.summary}`]
+        : []),
     ].join('\n');
   }
 

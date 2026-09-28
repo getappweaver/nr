@@ -84,7 +84,7 @@ export function formatNrDetail(t: Nr): string {
     `Created: ${new Date(t.event_created_at * 1000).toLocaleString()}`,
     `Topics: ${t.topics.join(', ')}`,
     `Moods: ${t.moods.join(', ')}`,
-    `Summary: ${t.summary}`,
+    ...(t.summary.trim() ? [`Summary: ${t.summary}`] : []),
     `Content: ${t.content}`,
   ].join('\n');
 }

@@ -10,6 +10,7 @@ import {
   parseAiClassification,
   type NrAudienceReactionCount,
 } from './classifier';
+import { classifyEventWithJev } from './classifier-jev';
 import type {
   EventClassification,
   NostrEvent,
@@ -78,7 +79,6 @@ export async function classifyEventWithNrAi({
   agent,
   abortSignal,
 }: ClassifyEventWithNrAiProps): Promise<EventClassification> {
-  const fallback = classifyEvent(event);
   const settings = getNrSettings(db);
 
   const promptReferencedEvents =
@@ -90,6 +90,18 @@ export async function classifyEventWithNrAi({
         fallbackRelays: parseRelayUrls(process.env.BOT_RELAYS ?? ''),
       })
     ).events;
+
+  if (settings.mode === 'classifier') {
+    return classifyEventWithJev({
+      db,
+      event,
+      threadContextEvents,
+      referencedEvents: promptReferencedEvents,
+      abortSignal,
+    });
+  }
+
+  const fallback = classifyEvent(event);
 
   const imageDescriptions = await describeEventImages({
     db,
@@ -115,11 +127,8 @@ export async function classifyEventWithNrAi({
   const result = await agent.run({
     prompt,
     sessionId: null,
-    backend: settings.backend,
-    provider: null,
-    model: settings.model,
-    mode: null,
     workspaceTarget: null,
+    modelId: settings.model,
     cwd: null,
     onAgentStreamChunk: null,
     abortSignal,

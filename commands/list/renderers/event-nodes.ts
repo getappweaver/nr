@@ -646,8 +646,8 @@ function eventSignalMetadata({
   ]);
 }
 
-function summaryNodes(summary: string): WebNode[] {
-  const value = summary.trim();
+function summaryNodes(summary: string | null | undefined): WebNode[] {
+  const value = summary?.trim() ?? '';
 
   return value
     ? [
@@ -1141,13 +1141,21 @@ function readTagAction({
   selectedTimeRanges,
 }: ReadTagActionProps) {
   return {
-    type: 'command' as const,
-    command: alias,
-    subcommand: 'mark',
-    arguments: {},
-    options: { type, tag, read: true },
-    recordInTimeline: false,
-    pendingUi: { presentation: 'entity' as const, label: 'Marking read...' },
+    ...optimisticCommandAction({
+      mutations: [
+        {
+          type: 'removeEntity',
+          entityKey: tagGroupEntityKey(type, tag),
+          pruneEmptyParents: true,
+        },
+      ],
+      command: {
+        command: alias,
+        subcommand: 'mark',
+        arguments: {},
+        options: { type, tag, read: true },
+      },
+    }),
     refresh: {
       command: alias,
       subcommand: 'list',
@@ -4260,7 +4268,7 @@ export function profileEventNode({
               localPreference: undefined,
               authorPreference:
                 authorPreferences.get(reference.pubkey.toLowerCase()) ?? null,
-              sharePrefixes: null,
+              sharePrefixes,
               translationTargetLanguage,
               mode,
               renderScope: `${renderScope}:source:${event.id}:reference:${reference.id}`,

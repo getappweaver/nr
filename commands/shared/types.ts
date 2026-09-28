@@ -225,12 +225,14 @@ export type ParsedNrEventResult = {
 };
 
 export type EventClassification = {
+  evaluationMode?: 'llm' | 'classifier';
   topics: string[];
   moods: string[];
   summary: string;
   language: string;
   model: string;
   confidence: number;
+  relevanceScore?: number;
   skip: boolean;
   skipReason: string | null;
 };

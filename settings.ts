@@ -4,15 +4,28 @@ import {
   CapabilityResourceRefSchema,
   type CapabilityResourceRef,
 } from '@src/capabilities/types';
-import type { AgentBackendName } from '@src/db';
+type LegacyAgentBackendName = 'opencode' | 'cursor';
 import type { NostrSharePrefixes } from '@src/web/nostr-share';
 
 export type NrSignalReviewMode = 'ask' | 'always' | 'never';
+export type NrEvaluationMode = 'llm' | 'classifier';
 
 export type NrSettings = {
-  backend: AgentBackendName | null;
+  mode: NrEvaluationMode;
+  jevApiBase: string;
+  jevHasApiKey: boolean;
+  jevTopics: string;
+  jevTopicBatchSize: number;
+  jevMoods: string;
+  jevLanguages: string;
+  jevStateInstructions: string;
+  jevTopicQuestion: string;
+  jevMoodQuestion: string;
+  jevLanguageQuestion: string;
+  jevRelevanceQuestion: string;
+  backend: LegacyAgentBackendName | null;
   model: string | null;
-  imageBackend: AgentBackendName | null;
+  imageBackend: LegacyAgentBackendName | null;
   imageModel: string | null;
   instructions: string;
   eventSharePrefix: string;
@@ -43,6 +56,24 @@ export const DEFAULT_NR_MAX_IMAGES_PER_EVENT = 1;
 export const DEFAULT_NR_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 export const DEFAULT_NR_IMAGE_FETCH_TIMEOUT_SEC = 60;
 export const DEFAULT_NR_SIGNAL_REVIEW_MODE: NrSignalReviewMode = 'ask';
+export const DEFAULT_NR_JEV_API_BASE = 'https://api.typesafe.ai';
+export const DEFAULT_NR_JEV_TOPICS =
+  'nostr, bitcoin, ai, software, privacy, music, art, politics, science, health, finance, sports, food, travel';
+export const DEFAULT_NR_JEV_TOPIC_BATCH_SIZE = 10;
+export const DEFAULT_NR_JEV_MOODS =
+  'neutral, happy, funny, thoughtful, sad, angry, inviting';
+export const DEFAULT_NR_JEV_LANGUAGES =
+  'en, tr, de, es, fr, pt, it, nl, ja, zh, ko, ar, ru, und';
+export const DEFAULT_NR_JEV_STATE_INSTRUCTIONS =
+  'Classify the central content of `event`. Use `thread` and `references` only to disambiguate the event. Treat `preferences` as personal relevance signals, not as descriptions of the event.';
+export const DEFAULT_NR_JEV_TOPIC_QUESTION =
+  'Which candidate topic is most central to `event`? Choose none if none fits; do not infer a topic just because it is in `preferences`.';
+export const DEFAULT_NR_JEV_MOOD_QUESTION =
+  'What tone or intent does `event` express? Choose neutral if no other mood is clearly expressed.';
+export const DEFAULT_NR_JEV_LANGUAGE_QUESTION =
+  'What is the primary language of `event.content`? Choose und when it cannot be determined.';
+export const DEFAULT_NR_JEV_RELEVANCE_QUESTION =
+  'How relevant is `event` to the user given `preferences`? A passing mention is not a central match. Explicit manual preferences take priority over inferred signals.';
 
 export const DEFAULT_NR_CLASSIFICATION_INSTRUCTIONS = `Classify this Nostr event for a personal unread radar.
 
@@ -82,6 +113,18 @@ Guidelines:
 - Still fill topics, moods, summary, language, and confidence even when "skip": true.`;
 
 const SETTINGS_KEYS = {
+  mode: 'mode',
+  jevApiKey: 'jev_api_key',
+  jevApiBase: 'jev_api_base',
+  jevTopics: 'jev_topics',
+  jevTopicBatchSize: 'jev_topic_batch_size',
+  jevMoods: 'jev_moods',
+  jevLanguages: 'jev_languages',
+  jevStateInstructions: 'jev_state_instructions',
+  jevTopicQuestion: 'jev_topic_question',
+  jevMoodQuestion: 'jev_mood_question',
+  jevLanguageQuestion: 'jev_language_question',
+  jevRelevanceQuestion: 'jev_relevance_question',
   backend: 'backend',
   model: 'model',
   imageBackend: 'image_backend',
@@ -135,12 +178,8 @@ function deleteSetting(db: Database, key: string): void {
   db.run('DELETE FROM nr_settings WHERE key = ?', [key]);
 }
 
-function parseBackend(value: string | null): AgentBackendName | null {
-  if (value === 'cursor' || value === 'opencode') {
-    return value;
-  }
-
-  return null;
+function parseBackend(value: string | null): LegacyAgentBackendName | null {
+  return value === 'opencode' || value === 'cursor' ? 'opencode' : null;
 }
 
 function sharePrefix(value: string | null): string {
@@ -161,6 +200,14 @@ function aiEvaluationConcurrency(value: string | null): number {
   return Number.isInteger(parsed) && parsed > 0
     ? parsed
     : DEFAULT_NR_AI_EVALUATION_CONCURRENCY;
+}
+
+function jevTopicBatchSize(value: string | null): number {
+  const parsed = value ? Number(value) : Number.NaN;
+
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 50
+    ? parsed
+    : DEFAULT_NR_JEV_TOPIC_BATCH_SIZE;
 }
 
 function maxImagesPerEvent(value: string | null): number {
@@ -216,6 +263,35 @@ export function nrSharePrefixes(settings: NrSettings): NostrSharePrefixes {
 
 export function getNrSettings(db: Database): NrSettings {
   return {
+    mode:
+      getSetting(db, SETTINGS_KEYS.mode) === 'classifier'
+        ? 'classifier'
+        : 'llm',
+    jevApiBase:
+      getSetting(db, SETTINGS_KEYS.jevApiBase) || DEFAULT_NR_JEV_API_BASE,
+    jevHasApiKey: Boolean(getNrJevApiKey(db)),
+    jevTopics: getSetting(db, SETTINGS_KEYS.jevTopics) ?? DEFAULT_NR_JEV_TOPICS,
+    jevTopicBatchSize: jevTopicBatchSize(
+      getSetting(db, SETTINGS_KEYS.jevTopicBatchSize),
+    ),
+    jevMoods: getSetting(db, SETTINGS_KEYS.jevMoods) ?? DEFAULT_NR_JEV_MOODS,
+    jevLanguages:
+      getSetting(db, SETTINGS_KEYS.jevLanguages) ?? DEFAULT_NR_JEV_LANGUAGES,
+    jevStateInstructions:
+      getSetting(db, SETTINGS_KEYS.jevStateInstructions) ??
+      DEFAULT_NR_JEV_STATE_INSTRUCTIONS,
+    jevTopicQuestion:
+      getSetting(db, SETTINGS_KEYS.jevTopicQuestion) ??
+      DEFAULT_NR_JEV_TOPIC_QUESTION,
+    jevMoodQuestion:
+      getSetting(db, SETTINGS_KEYS.jevMoodQuestion) ??
+      DEFAULT_NR_JEV_MOOD_QUESTION,
+    jevLanguageQuestion:
+      getSetting(db, SETTINGS_KEYS.jevLanguageQuestion) ??
+      DEFAULT_NR_JEV_LANGUAGE_QUESTION,
+    jevRelevanceQuestion:
+      getSetting(db, SETTINGS_KEYS.jevRelevanceQuestion) ??
+      DEFAULT_NR_JEV_RELEVANCE_QUESTION,
     backend: parseBackend(getSetting(db, SETTINGS_KEYS.backend)),
     model: getSetting(db, SETTINGS_KEYS.model),
     imageBackend: parseBackend(getSetting(db, SETTINGS_KEYS.imageBackend)),
@@ -276,9 +352,21 @@ export function getNrSettings(db: Database): NrSettings {
 
 type SaveNrSettingsProps = {
   db: Database;
-  backend: AgentBackendName | null;
+  mode: NrEvaluationMode;
+  jevApiKey?: string | null;
+  jevApiBase: string;
+  jevTopics: string;
+  jevTopicBatchSize: number;
+  jevMoods: string;
+  jevLanguages: string;
+  jevStateInstructions: string;
+  jevTopicQuestion: string;
+  jevMoodQuestion: string;
+  jevLanguageQuestion: string;
+  jevRelevanceQuestion: string;
+  backend: LegacyAgentBackendName | null;
   model: string | null;
-  imageBackend: AgentBackendName | null;
+  imageBackend: LegacyAgentBackendName | null;
   imageModel: string | null;
   instructions: string | null;
   eventSharePrefix: string;
@@ -301,6 +389,18 @@ type SaveNrSettingsProps = {
 
 export function saveNrSettings({
   db,
+  mode,
+  jevApiKey,
+  jevApiBase,
+  jevTopics,
+  jevTopicBatchSize,
+  jevMoods,
+  jevLanguages,
+  jevStateInstructions,
+  jevTopicQuestion,
+  jevMoodQuestion,
+  jevLanguageQuestion,
+  jevRelevanceQuestion,
   backend,
   model,
   imageBackend,
@@ -323,6 +423,31 @@ export function saveNrSettings({
   replySignalReviewMode,
   repostQuoteSignalReviewMode,
 }: SaveNrSettingsProps): NrSettings {
+  setSetting(db, SETTINGS_KEYS.mode, mode);
+
+  if (jevApiKey !== undefined) {
+    if (jevApiKey?.trim()) {
+      setSetting(db, SETTINGS_KEYS.jevApiKey, jevApiKey.trim());
+    } else {
+      deleteSetting(db, SETTINGS_KEYS.jevApiKey);
+    }
+  }
+
+  for (const [key, value] of [
+    [SETTINGS_KEYS.jevApiBase, jevApiBase],
+    [SETTINGS_KEYS.jevTopics, jevTopics],
+    [SETTINGS_KEYS.jevTopicBatchSize, String(jevTopicBatchSize)],
+    [SETTINGS_KEYS.jevMoods, jevMoods],
+    [SETTINGS_KEYS.jevLanguages, jevLanguages],
+    [SETTINGS_KEYS.jevStateInstructions, jevStateInstructions],
+    [SETTINGS_KEYS.jevTopicQuestion, jevTopicQuestion],
+    [SETTINGS_KEYS.jevMoodQuestion, jevMoodQuestion],
+    [SETTINGS_KEYS.jevLanguageQuestion, jevLanguageQuestion],
+    [SETTINGS_KEYS.jevRelevanceQuestion, jevRelevanceQuestion],
+  ]) {
+    setSetting(db, key, value);
+  }
+
   if (backend === null) {
     deleteSetting(db, SETTINGS_KEYS.backend);
   } else {
@@ -430,6 +555,23 @@ export function saveNrSettings({
 }
 
 export function resetNrSettings(db: Database): NrSettings {
+  for (const key of [
+    SETTINGS_KEYS.mode,
+    SETTINGS_KEYS.jevApiKey,
+    SETTINGS_KEYS.jevApiBase,
+    SETTINGS_KEYS.jevTopics,
+    SETTINGS_KEYS.jevTopicBatchSize,
+    SETTINGS_KEYS.jevMoods,
+    SETTINGS_KEYS.jevLanguages,
+    SETTINGS_KEYS.jevStateInstructions,
+    SETTINGS_KEYS.jevTopicQuestion,
+    SETTINGS_KEYS.jevMoodQuestion,
+    SETTINGS_KEYS.jevLanguageQuestion,
+    SETTINGS_KEYS.jevRelevanceQuestion,
+  ]) {
+    deleteSetting(db, key);
+  }
+
   deleteSetting(db, SETTINGS_KEYS.backend);
   deleteSetting(db, SETTINGS_KEYS.model);
   deleteSetting(db, SETTINGS_KEYS.imageBackend);
@@ -455,8 +597,12 @@ export function resetNrSettings(db: Database): NrSettings {
   return getNrSettings(db);
 }
 
+export function getNrJevApiKey(db: Database): string | null {
+  return getSetting(db, SETTINGS_KEYS.jevApiKey);
+}
+
 export function nrImageAgentSelection(settings: NrSettings): {
-  backend: AgentBackendName | null;
+  backend: LegacyAgentBackendName | null;
   model: string | null;
 } {
   return {

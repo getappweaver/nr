@@ -20,7 +20,7 @@ Renderers for the Nostr Radar list command, producing text and WebNode-based UI 
 
 ## Files
 - `archive.ts` - Archive-mode tree composition (Topics/Moods/Languages sections).
-- `event-nodes.ts` - Shared post rendering core: event/activity/profile nodes, grouping, sections, actions, embeds, thread context, and author preference actions.
+- `event-nodes.ts` - Shared post rendering core: event/activity/profile nodes, grouping, sections, actions, embeds, thread context, and author preference actions; the tag read shortcut optimistically removes the group and reconciles with a nonblocking refresh after the mark command.
 - `fetch-coverage.ts` - Builds the 24-hour fetch-coverage bar, including status styling and interval-specific fetch actions.
 - `for-you.ts` - For-You-mode tree composition (ranked events plus empty state).
 - `list.svg` - Nostr Radar icon asset.

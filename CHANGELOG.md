@@ -4,9 +4,13 @@ All notable changes for each version are listed under the corresponding `v*.*.*`
 Tags and this file are updated by the post-commit hook when you commit with `--patch`, `--minor`, or `--major` (see CONTRIBUTING.md).
 You can also run `bun run release:changelog` to rewrite this file from tags.
 
+## [v4.1.0] - 2026-09-29
+
+- feat: introduced jev mode (16e089d)
+
 ## [v4.0.0] - 2026-09-08
 
-- feat: switching to use scheduler.v2 for auto fetch (bf86559)
+- feat: switching to use scheduler.v2 for auto fetch (34472a9)
 
 ## [v3.4.1] - 2026-09-07
 

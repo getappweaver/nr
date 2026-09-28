@@ -49,3 +49,18 @@ test('does not partially match unrelated or suffix-only topics', () => {
   expect(score(['discord'], { concord: 5 })).toBe(0);
   expect(score(['protocol'], { 'concord-protocol': 5 })).toBe(0);
 });
+
+test('combines stored Jev relevance with topic and author affinities', () => {
+  const event = eventWithTopics(['nostr']);
+
+  event.classification_json = JSON.stringify({ relevanceScore: 2.5 });
+
+  expect(
+    scoreNrEventForYou({
+      event,
+      topicAffinities: new Map([['nostr', 5]]),
+      learnedAuthorAffinities: new Map(),
+      explicitAuthorBiases: new Map(),
+    }),
+  ).toBe(8);
+});

@@ -45,7 +45,6 @@ test('upgrades an existing scheduler v1 resource to the NR plugin tool', async (
           task: {
             type: 'agent-prompt' as const,
             prompt: 'Run the NR CLI.',
-            mode: 'agent' as const,
             workspaceTarget: 'appweaver' as const,
           },
           view: null,
