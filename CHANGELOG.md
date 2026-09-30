@@ -4,9 +4,13 @@ All notable changes for each version are listed under the corresponding `v*.*.*`
 Tags and this file are updated by the post-commit hook when you commit with `--patch`, `--minor`, or `--major` (see CONTRIBUTING.md).
 You can also run `bun run release:changelog` to rewrite this file from tags.
 
+## [v4.1.1] - 2026-10-01
+
+- fix: sort timeline topics/moods and posts by score (25b32f3)
+
 ## [v4.1.0] - 2026-09-29
 
-- feat: introduced jev mode (16e089d)
+- feat: introduced jev mode (50ea44e)
 
 ## [v4.0.0] - 2026-09-08
 

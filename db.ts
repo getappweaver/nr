@@ -3691,13 +3691,8 @@ export function getNrListData({
           timeRanges: queryTimeRanges,
         });
 
-  if (mode === 'timeline') {
-    topicGroups.sort(
-      (left, right) =>
-        left.unreadCount - right.unreadCount ||
-        left.tag.localeCompare(right.tag),
-    );
-  }
+  // Group/item ordering by score is applied after forYouScores are
+  // computed (see below), so no ordering here.
 
   const moodGroups =
     mode === 'for-you' || mode === 'signals'
@@ -3889,6 +3884,35 @@ export function getNrListData({
         : []),
     ].map(({ event, score }) => [event.id, score]),
   );
+
+  const scoreOf = (id: string): number => forYouScores[id] ?? Number.NEGATIVE_INFINITY;
+
+  const sortEventsByScore = (events: NrEvent[]) => {
+    events.sort(
+      (left, right) =>
+        scoreOf(right.id) - scoreOf(left.id) ||
+        right.event_created_at - left.event_created_at,
+    );
+  };
+
+  const maxGroupScore = (group: NrTagGroup): number =>
+    group.events.reduce((max, event) => Math.max(max, scoreOf(event.id)), Number.NEGATIVE_INFINITY);
+
+  const sortGroupsByScore = (groups: NrTagGroup[]) => {
+    for (const group of groups) {
+      sortEventsByScore(group.events);
+    }
+
+    groups.sort(
+      (left, right) =>
+        maxGroupScore(right) - maxGroupScore(left) ||
+        right.unreadCount - left.unreadCount ||
+        left.tag.localeCompare(right.tag),
+    );
+  };
+
+  sortGroupsByScore(topicGroups);
+  sortGroupsByScore(moodGroups);
 
   const signalAggregates =
     mode === 'signals'
