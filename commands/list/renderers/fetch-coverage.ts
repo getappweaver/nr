@@ -23,6 +23,7 @@ type FetchBucket = {
   status: NrFetchStatus | 'unfetched';
   eventCount: number;
   countKind: 'fetched' | 'unread';
+  allRead?: boolean;
 };
 
 type BucketStatus = Pick<FetchBucket, 'status' | 'eventCount'>;
@@ -164,6 +165,24 @@ export const fetchCoverageStylesheet = {
   content: '✓';
   font-size: 0.78rem;
   font-weight: 700;
+}
+
+.nr-fetch-bucket--all-read {
+  position: relative;
+}
+
+.nr-fetch-bucket--all-read::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 75%;
+  height: 75%;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zm8 7L4 6v12h16V6l-8 6z' fill='white'/%3E%3C/svg%3E") no-repeat center / contain;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zm8 7L4 6v12h16V6l-8 6z' fill='white'/%3E%3C/svg%3E") no-repeat center / contain;
+  opacity: 0.9;
+  pointer-events: none;
 }
 `,
 };
@@ -426,7 +445,9 @@ function fetchBucketNode({
     label: '',
     ariaLabel: description,
     title: description,
-    className: `nr-fetch-bucket nr-fetch-bucket--${bucket.status}`,
+    className: `nr-fetch-bucket nr-fetch-bucket--${bucket.status}${
+      bucket.allRead ? ' nr-fetch-bucket--all-read' : ''
+    }`,
     timeFilterGroup: NR_TIMELINE_TIME_FILTER_GROUP,
     timeFilterRangeKey: nrListTimeRangeKey(range),
   };
@@ -527,6 +548,10 @@ function fetchBucketTitle(bucket: FetchBucket): string {
   }
 
   if (bucket.status === 'fetched') {
+    if (bucket.allRead) {
+      return `fetched: ${bucket.eventCount} event(s), all read. Coverage interval: ${range}. Open time filter actions.`;
+    }
+
     return bucket.countKind === 'unread'
       ? `fetched: ${bucket.eventCount} unread event(s). Coverage interval: ${range}. Open time filter actions.`
       : `fetched: ${bucket.eventCount} event(s). Coverage interval: ${range}. Open time filter actions.`;
@@ -649,10 +674,22 @@ export function fetchCoverageBar(
   alias: string,
   listData: NrListData,
 ): FetchCoverageBarResult {
-  const buckets = fetchBuckets(
+  const rawBuckets = fetchBuckets(
     listData.fetchWindows,
     listData.fetchCoverageNowSeconds,
   );
+
+  const unreadKeys = new Set(
+    listData.unreadFetchSlots.map((slot) => nrListTimeRangeKey(slot)),
+  );
+
+  const buckets = rawBuckets.map((bucket) => ({
+    ...bucket,
+    allRead:
+      (bucket.status === 'fetched' || bucket.status === 'partial') &&
+      bucket.eventCount > 0 &&
+      !unreadKeys.has(nrListTimeRangeKey(bucketRange(bucket))),
+  }));
 
   const labels = fetchBoundaryLabels(buckets);
 
@@ -724,6 +761,7 @@ export function fetchCoverageBar(
                 'yellow: partial fetch; some relay groups failed',
                 'red: all relay groups failed',
                 '✓: included in the current time filter',
+                '✉: all posts in this hour are read',
               ].join('\n'),
             ),
           ]),
