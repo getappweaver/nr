@@ -14,6 +14,7 @@ import {
 import { extractProfileReferences } from '../../references';
 import { getNrSchedulerResource } from '../../settings';
 import type { NrCommandAdapterParams } from '../../types/adapter-params';
+import { parseZapReceipt } from '../../zap';
 
 import type {
   NrEvent,
@@ -114,6 +115,17 @@ function collectProfilePubkeys(listData: NrListData): string[] {
       events
         .flatMap((event) => [
           event.pubkey,
+          ...(event.kind === 9735
+            ? (() => {
+                try {
+                  return [
+                    parseZapReceipt(JSON.parse(event.raw_json)).zapperPubkey,
+                  ];
+                } catch {
+                  return [];
+                }
+              })()
+            : []),
           ...extractProfileReferences(event.content).map(
             (reference) => reference.pubkey,
           ),

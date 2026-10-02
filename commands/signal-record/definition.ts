@@ -75,6 +75,13 @@ export const signalRecordDefinition = (): SubcommandDefinition => ({
       required: false,
     },
     {
+      name: 'signal_read_post',
+      flag: '--signal-read-post',
+      summary: 'Mark the post read after a successful action.',
+      kind: 'boolean',
+      required: false,
+    },
+    {
       name: 'target_author_pubkey',
       flag: '--target-author-pubkey',
       summary:

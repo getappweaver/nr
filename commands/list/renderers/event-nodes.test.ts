@@ -583,3 +583,149 @@ test('renders embeds from a context-only conversation main post', () => {
     content: quoted.content,
   });
 });
+
+test('renders kind 9735 zap receipt activity header with zapper, amount, and comment', () => {
+  const note = finalizeEvent(
+    { kind: 1, created_at: 100, content: 'Great article on Nostr', tags: [] },
+    generateSecretKey(),
+  );
+
+  const zapperKey = generateSecretKey();
+
+  const zapRequest = finalizeEvent(
+    {
+      kind: 9734,
+      created_at: 150,
+      content: 'Keep up the good work!',
+      tags: [
+        ['e', note.id],
+        ['p', note.pubkey],
+        ['amount', '1000000'],
+      ],
+    },
+    zapperKey,
+  );
+
+  const zapReceipt = finalizeEvent(
+    {
+      kind: 9735,
+      created_at: 160,
+      content: '',
+      tags: [
+        ['p', note.pubkey],
+        ['P', zapRequest.pubkey],
+        ['e', note.id],
+        ['description', JSON.stringify(zapRequest)],
+        ['bolt11', 'lnbc10u...'],
+      ],
+    },
+    generateSecretKey(),
+  );
+
+  const storedNote = storedEvent(note);
+
+  const storedZap = {
+    ...storedEvent(zapReceipt),
+    referenced_events_json: JSON.stringify([note]),
+  };
+
+  const nodes = renderEvents({
+    events: [storedZap, storedNote],
+    followedPubkeys: new Set([note.pubkey, zapReceipt.pubkey]),
+    conversationEvents: new Map([
+      [note.id, storedNote],
+      [zapReceipt.id, storedZap],
+    ]),
+  });
+
+  expect(nodes).toHaveLength(1);
+  const post = nostrPostProps(nodes[0], note.id);
+
+  const activityHeaders = post?.nostrActivityHeaders as
+    Array<Record<string, unknown>> | undefined;
+
+  expect(activityHeaders).toBeDefined();
+  expect(activityHeaders).toHaveLength(1);
+
+  const header = activityHeaders?.[0];
+  expect(header?.label).toBe('Zapped ⚡ 1,000 sats');
+  expect(header?.actorPubkey).toBe(zapRequest.pubkey);
+  expect(header?.comment).toBe('Keep up the good work!');
+});
+
+test('does not set Jumble href for kind 30023 naddr address references', () => {
+  const authorKey = generateSecretKey();
+
+  const author = finalizeEvent(
+    { kind: 1, created_at: 10, content: '', tags: [] },
+    authorKey,
+  );
+
+  const naddr = nip19.naddrEncode({
+    kind: 30023,
+    pubkey: author.pubkey,
+    identifier: 'my-long-form-article',
+  });
+
+  const token = `nostr:${naddr}`;
+
+  const source = finalizeEvent(
+    {
+      kind: 1,
+      created_at: 200,
+      content: `Check out this article: ${token}`,
+      tags: [],
+    },
+    generateSecretKey(),
+  );
+
+  const storedSource = storedEvent(source);
+
+  const nodes = renderEvents({
+    events: [storedSource],
+    followedPubkeys: new Set([source.pubkey]),
+    conversationEvents: new Map(),
+    mode: 'for-you',
+  });
+
+  const post = nostrPostProps(nodes[0], source.id);
+
+  const embeds = post?.nostrEmbeds as
+    Record<string, Record<string, unknown>> | undefined;
+
+  expect(embeds?.[token]).toBeDefined();
+  expect(embeds?.[token]?.href).toBeUndefined();
+  expect(embeds?.[token]?.label).toBeUndefined();
+  expect(embeds?.[token]?.kind).toBe(30023);
+});
+
+test('includes allowReadPost in repost signal review payload', () => {
+  const authorKey = generateSecretKey();
+
+  const note = finalizeEvent(
+    { kind: 1, created_at: 100, content: 'test note', tags: [] },
+    authorKey,
+  );
+
+  const stored = storedEvent(note);
+
+  const nodes = renderEvents({
+    events: [stored],
+    followedPubkeys: new Set([note.pubkey]),
+    conversationEvents: new Map(),
+    mode: 'timeline',
+  });
+
+  const post = nostrPostProps(nodes[0], note.id);
+
+  const repostAction = post?.nostrRepostAction as
+    | {
+        type: string;
+        action: string;
+        payload: { signalReview?: { allowReadPost?: boolean } };
+      }
+    | undefined;
+
+  expect(repostAction?.action).toBe('nostr.openRepostPanel');
+  expect(repostAction?.payload.signalReview?.allowReadPost).toBe(true);
+});

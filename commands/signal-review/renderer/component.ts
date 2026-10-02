@@ -28,6 +28,8 @@ export type SignalReviewFieldsProps = {
   targetAuthorPubkey: string | null;
   targetAuthorLabel: string;
   candidateTopics: string[];
+  allowReadPost: boolean;
+  readPostLabel: string;
   allowRemember: boolean;
   rememberLabel: string;
 };
@@ -84,6 +86,8 @@ export function renderSignalReviewFields({
   targetAuthorPubkey,
   targetAuthorLabel,
   candidateTopics,
+  allowReadPost,
+  readPostLabel,
   allowRemember,
   rememberLabel,
 }: SignalReviewFieldsProps): WebNode[] {
@@ -112,9 +116,21 @@ export function renderSignalReviewFields({
           }),
         )
       : [el('text', { tone: 'muted', size: 'sm' }, [text('No topics')])]),
+    ...(allowReadPost || allowRemember
+      ? [el('divider', { className: 'web-form__section-divider' }, [])]
+      : []),
+    ...(allowReadPost
+      ? [
+          checkboxRow({
+            fieldName: 'signal_read_post',
+            value: 'true',
+            label: readPostLabel,
+            checked: true,
+          }),
+        ]
+      : []),
     ...(allowRemember
       ? [
-          el('divider', { className: 'web-form__section-divider' }, []),
           checkboxRow({
             fieldName: 'signal_remember',
             value: 'true',
@@ -163,6 +179,8 @@ export function renderSignalReviewForm({
   targetAuthorPubkey,
   targetAuthorLabel,
   candidateTopics,
+  allowReadPost,
+  readPostLabel,
   allowRemember,
   rememberLabel,
   createLabel,
@@ -188,6 +206,8 @@ export function renderSignalReviewForm({
         targetAuthorPubkey,
         targetAuthorLabel,
         candidateTopics,
+        allowReadPost,
+        readPostLabel,
         allowRemember,
         rememberLabel,
       }),

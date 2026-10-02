@@ -334,7 +334,7 @@ async function fetchRelayGroupPages({
         operation: params.storedCtx.pool.querySync(
           [group.relay],
           {
-            kinds: [1, 6, 7, 16, 1111, 9802, 30023],
+            kinds: [1, 6, 7, 16, 1111, 9802, 30023, 9735],
             authors,
             since,
             until: nextUntil,
@@ -832,7 +832,7 @@ async function runFetchEvaluate({
         const directActivityTarget = directGraphEvents({
           graph,
           sourceEventId: parsed.data.id,
-          roles: ['repost-target', 'reaction-target'],
+          roles: ['repost-target', 'reaction-target', 'zap-target'],
         })[0];
 
         let embeddedRepost: NostrEvent | null = null;
@@ -909,7 +909,8 @@ async function runFetchEvaluate({
         const classificationEvent =
           parsed.data.kind === 6 ||
           parsed.data.kind === 7 ||
-          parsed.data.kind === 16
+          parsed.data.kind === 16 ||
+          parsed.data.kind === 9735
             ? activityTarget
             : parsed.data;
 
@@ -977,7 +978,10 @@ async function runFetchEvaluate({
           continue;
         }
 
-        if (parsed.data.kind === 7 && classificationEvent) {
+        if (
+          (parsed.data.kind === 7 || parsed.data.kind === 9735) &&
+          classificationEvent
+        ) {
           const cachedTarget = getNr(params.db, classificationEvent.id);
 
           if (cachedTarget) {

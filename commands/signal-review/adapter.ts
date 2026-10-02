@@ -220,6 +220,8 @@ export function adaptSignalReviewCommand(params: NrCommandAdapterParams) {
     targetEventJson: stringOption(params.parsed.options.target_event_json),
   };
 
+  const allowReadPost = category === 'archive' || category === 'repost_quote';
+
   const archiveCommand =
     category === 'archive'
       ? {
@@ -318,6 +320,8 @@ export function adaptSignalReviewCommand(params: NrCommandAdapterParams) {
     targetAuthorPubkey,
     targetAuthorLabel,
     candidateTopics,
+    allowReadPost,
+    readPostLabel: 'Read post',
     allowRemember,
     rememberLabel: rememberLabel(category),
     createLabel: createLabel(category),
@@ -332,6 +336,7 @@ export function adaptSignalReviewCommand(params: NrCommandAdapterParams) {
     formOptionFieldNames: [
       'signal_topics',
       'signal_author_pubkey',
+      'signal_read_post',
       'signal_remember',
     ],
   });

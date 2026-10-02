@@ -1,6 +1,7 @@
 import {
   getNrSignalReviewTargetAuthor,
   listNrDirectSignalReviewTopics,
+  markEventRead,
   recordReviewedNrInterestSignal,
   removeNrInterestSignal,
 } from '../../db';
@@ -137,6 +138,10 @@ export function adaptSignalRecordCommand(
 
   const remember = booleanOption(params.parsed.options.signal_remember);
 
+  const readPost =
+    (category === 'archive' || category === 'repost_quote') &&
+    booleanOption(params.parsed.options.signal_read_post);
+
   return params.db.transaction(() => {
     if (outcome === 'create') {
       const targetAuthorPubkey =
@@ -217,6 +222,10 @@ export function adaptSignalRecordCommand(
         authorPubkey: selectedAuthor ?? null,
         source: signalSource(type),
       });
+    }
+
+    if (readPost) {
+      markEventRead(params.db, targetEventId);
     }
 
     const reviewSettingsCategory = settingsCategory(category);

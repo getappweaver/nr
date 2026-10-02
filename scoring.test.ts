@@ -64,3 +64,47 @@ test('combines stored Jev relevance with topic and author affinities', () => {
     }),
   ).toBe(8);
 });
+
+test('adds logarithmic zap score to event score', () => {
+  const event = eventWithTopics(['nostr']);
+
+  expect(
+    scoreNrEventForYou({
+      event,
+      topicAffinities: new Map([['nostr', 5]]),
+      learnedAuthorAffinities: new Map(),
+      explicitAuthorBiases: new Map(),
+      zapSats: 100,
+    }),
+  ).toBeCloseTo(7.1, 2);
+
+  expect(
+    scoreNrEventForYou({
+      event,
+      topicAffinities: new Map([['nostr', 5]]),
+      learnedAuthorAffinities: new Map(),
+      explicitAuthorBiases: new Map(),
+      zapSats: 1000,
+    }),
+  ).toBeCloseTo(8.1, 2);
+
+  expect(
+    scoreNrEventForYou({
+      event,
+      topicAffinities: new Map([['nostr', 5]]),
+      learnedAuthorAffinities: new Map(),
+      explicitAuthorBiases: new Map(),
+      zapSats: 1,
+    }),
+  ).toBeCloseTo(5.1, 2);
+
+  expect(
+    scoreNrEventForYou({
+      event,
+      topicAffinities: new Map([['nostr', 5]]),
+      learnedAuthorAffinities: new Map(),
+      explicitAuthorBiases: new Map(),
+      zapSats: 0,
+    }),
+  ).toBe(5);
+});

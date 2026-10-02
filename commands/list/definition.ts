@@ -26,12 +26,14 @@ export const listDefinition = (
       multiple: true,
       choices: [
         'posts',
+        'long-form',
         'replies',
         'comments',
         'highlights',
         'reposts',
         'quotes',
         'reactions',
+        'zaps',
       ],
     },
     {

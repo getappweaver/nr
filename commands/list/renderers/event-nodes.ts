@@ -18,6 +18,7 @@ import {
 } from '../../../references';
 import { type NrSignalReviewMode } from '../../../settings';
 import { extractNip10References } from '../../../thread-context';
+import { parseZapReceipt } from '../../../zap';
 
 import {
   NostrEventSchema,
@@ -297,6 +298,7 @@ function signalReviewPayload({
     targetAuthorPubkey: event.pubkey,
     targetAuthorLabel: authorLabel || event.pubkey.slice(0, 12),
     candidateTopics: signalReviewTopics(event),
+    allowReadPost: actionCategory === 'repost_quote',
     allowRemember: true,
     mode,
     targetEventJson: event.raw_json,
@@ -323,6 +325,7 @@ function rawSignalReviewPayload({
     targetAuthorPubkey: event.pubkey,
     targetAuthorLabel: signalReviewAuthorLabel(profile, event.pubkey),
     candidateTopics,
+    allowReadPost: actionCategory === 'repost_quote',
     allowRemember: true,
     mode,
     targetEventJson: JSON.stringify(event),
@@ -1572,10 +1575,13 @@ function addressReferences({
       authorUsername: profile?.name ?? undefined,
       authorPicture: profile?.picture ?? undefined,
       authorAbout: profile?.about ?? undefined,
-      href: `https://jumble.social/notes/${reference.naddr}`,
+      href:
+        reference.kind === 30023
+          ? undefined
+          : `https://jumble.social/notes/${reference.naddr}`,
       label:
         reference.kind === 30023
-          ? 'Read long-form post on Jumble'
+          ? undefined
           : 'Open addressable event on Jumble',
       showActions: false,
       profileActions: authorPreferenceActions({
@@ -2398,7 +2404,12 @@ function activityTarget(event: NrEvent): NostrEvent | null {
 }
 
 function isActivityEvent(event: Pick<NostrEvent, 'kind'>): boolean {
-  return event.kind === 6 || event.kind === 7 || event.kind === 16;
+  return (
+    event.kind === 6 ||
+    event.kind === 7 ||
+    event.kind === 16 ||
+    event.kind === 9735
+  );
 }
 
 function mergedActivityNode({
@@ -2513,16 +2524,52 @@ function mergedActivityNode({
     try {
       const event = JSON.parse(activity.raw_json) as NostrEvent;
 
-      const label =
-        event.kind === 6 || event.kind === 16
-          ? 'Reposted'
-          : event.kind === 7
-            ? `Reacted ${event.content || '+'}`
-            : null;
+      if (event.kind === 6 || event.kind === 16) {
+        return [
+          activityHeaderFor({
+            alias,
+            label: 'Reposted',
+            event,
+            profiles,
+            mode,
+          }),
+        ];
+      }
 
-      return label
-        ? [activityHeaderFor({ alias, label, event, profiles, mode })]
-        : [];
+      if (event.kind === 7) {
+        return [
+          activityHeaderFor({
+            alias,
+            label: `Reacted ${event.content || '+'}`,
+            event,
+            profiles,
+            mode,
+          }),
+        ];
+      }
+
+      if (event.kind === 9735) {
+        const zap = parseZapReceipt(event);
+
+        const label =
+          zap.amountSats > 0
+            ? `Zapped ⚡ ${zap.amountSats.toLocaleString()} sats`
+            : 'Zapped ⚡';
+
+        return [
+          activityHeaderFor({
+            alias,
+            label,
+            event,
+            profiles,
+            mode,
+            actorPubkeyOverride: zap.zapperPubkey,
+            comment: zap.comment ?? undefined,
+          }),
+        ];
+      }
+
+      return [];
     } catch {
       return [];
     }
@@ -2618,16 +2665,46 @@ function activityHeadersFor({
       return [];
     }
 
-    const label =
-      event.kind === 6 || event.kind === 16
-        ? 'Reposted'
-        : event.kind === 7
-          ? `Reacted ${event.content || '+'}`
-          : null;
+    if (event.kind === 6 || event.kind === 16) {
+      return [
+        activityHeaderFor({ alias, label: 'Reposted', event, profiles, mode }),
+      ];
+    }
 
-    return label
-      ? [activityHeaderFor({ alias, label, event, profiles, mode })]
-      : [];
+    if (event.kind === 7) {
+      return [
+        activityHeaderFor({
+          alias,
+          label: `Reacted ${event.content || '+'}`,
+          event,
+          profiles,
+          mode,
+        }),
+      ];
+    }
+
+    if (event.kind === 9735) {
+      const zap = parseZapReceipt(event);
+
+      const label =
+        zap.amountSats > 0
+          ? `Zapped ⚡ ${zap.amountSats.toLocaleString()} sats`
+          : 'Zapped ⚡';
+
+      return [
+        activityHeaderFor({
+          alias,
+          label,
+          event,
+          profiles,
+          mode,
+          actorPubkeyOverride: zap.zapperPubkey,
+          comment: zap.comment ?? undefined,
+        }),
+      ];
+    }
+
+    return [];
   });
 }
 
@@ -3935,33 +4012,39 @@ function activityHeaderFor({
   event,
   profiles,
   mode,
+  actorPubkeyOverride,
+  comment,
 }: {
   alias: string;
   label: string;
   event: NostrEvent;
   profiles: Map<string, CachedProfile>;
   mode: NrListMode;
+  actorPubkeyOverride?: string;
+  comment?: string;
 }) {
-  const profile = profileForPubkey({ profiles, pubkey: event.pubkey });
+  const actorPubkey = actorPubkeyOverride ?? event.pubkey;
+  const profile = profileForPubkey({ profiles, pubkey: actorPubkey });
 
   return {
     label,
-    actorPubkey: event.pubkey,
-    actorNpub: npubForPubkey(event.pubkey),
+    actorPubkey,
+    actorNpub: npubForPubkey(actorPubkey),
     actorName: profile?.displayName ?? undefined,
     actorUsername: profile?.name ?? undefined,
     actorPicture: profile?.picture ?? undefined,
     actorAbout: profile?.about ?? undefined,
     createdAt: event.created_at,
+    comment: comment || undefined,
     profileActions: authorPreferenceActions({
       alias,
-      pubkey: event.pubkey,
+      pubkey: actorPubkey,
       mode,
       preference: null,
     }),
     profileActionsReadAction: authorPreferenceActionsReadAction({
       alias,
-      pubkey: event.pubkey,
+      pubkey: actorPubkey,
       mode,
     }),
   };
@@ -4185,7 +4268,26 @@ export function profileEventNode({
             profiles,
             mode,
           })
-        : null;
+        : event.kind === 9735
+          ? (() => {
+              const zap = parseZapReceipt(event);
+
+              const label =
+                zap.amountSats > 0
+                  ? `Zapped ⚡ ${zap.amountSats.toLocaleString()} sats`
+                  : 'Zapped ⚡';
+
+              return activityHeaderFor({
+                alias,
+                label,
+                event,
+                profiles,
+                mode,
+                actorPubkeyOverride: zap.zapperPubkey,
+                comment: zap.comment ?? undefined,
+              });
+            })()
+          : null;
 
   const replyContext =
     category === 'replies' || category === 'comments' || reposted !== null
@@ -4255,7 +4357,7 @@ export function profileEventNode({
     renderKey: `nr:${renderScope}:source:${event.id}`,
     props: { id: `nr-profile-${event.id}`, defaultExpanded: false },
     summary: el('stack', { gap: 'xs', fill: true }, [
-      ...(event.kind === 7
+      ...(event.kind === 7 || event.kind === 9735
         ? referencedEvents.map((reference) =>
             profilePostNode({
               alias,

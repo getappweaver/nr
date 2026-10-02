@@ -5,16 +5,19 @@ import { finalizeEvent, generateSecretKey } from 'nostr-tools';
 import type { SeedEventsProps } from '@src/nostr/event-resolution-types';
 import type { NostrResolutionService } from '@src/nostr/resolution-service';
 
+import { adaptSignalRecordCommand } from './commands/signal-record/adapter';
 import {
   createNrTable,
   getNr,
   getNrListData,
+  getZappedSatsByTarget,
   markEventRead,
   markEventState,
   markTaggedEventsState,
   parseAndStoreEvent,
 } from './db';
 import { createNrSettingsTable } from './settings';
+import type { NrCommandAdapterParams } from './types/adapter-params';
 
 test('shared-cache seeding preserves NR classification and read/archive state', async () => {
   const db = new Database(':memory:');
@@ -251,6 +254,163 @@ test('NIP-22 comments remain unread when their parent is already read', async ()
       .flatMap((group) => group.events)
       .some((event) => event.id === comment.id),
   ).toBe(true);
+
+  db.close();
+});
+
+test('stores kind 9735 zap receipt as activity target and calculates zap scores', async () => {
+  const db = new Database(':memory:');
+  createNrTable(db);
+  createNrSettingsTable(db);
+
+  const note = finalizeEvent(
+    { kind: 1, created_at: 100, content: 'Zapped post', tags: [] },
+    generateSecretKey(),
+  );
+
+  const zapRequest = finalizeEvent(
+    {
+      kind: 9734,
+      created_at: 110,
+      content: 'Zap!',
+      tags: [
+        ['e', note.id],
+        ['p', note.pubkey],
+        ['amount', '1000000'],
+      ],
+    },
+    generateSecretKey(),
+  );
+
+  const zapReceipt = finalizeEvent(
+    {
+      kind: 9735,
+      created_at: 120,
+      content: '',
+      tags: [
+        ['p', note.pubkey],
+        ['P', zapRequest.pubkey],
+        ['e', note.id],
+        ['description', JSON.stringify(zapRequest)],
+        ['bolt11', 'lnbc10u...'],
+      ],
+    },
+    generateSecretKey(),
+  );
+
+  const classify = () => ({
+    topics: ['nostr'],
+    moods: ['focused'],
+    summary: 'summary',
+    language: 'en',
+    model: 'test',
+    confidence: 1,
+    skip: false,
+    skipReason: null,
+  });
+
+  const service = {
+    seedEvents: async () => ({
+      seeded: 0,
+      skipped: 0,
+      invalid: 0,
+      results: [],
+    }),
+  } as unknown as NostrResolutionService;
+
+  await parseAndStoreEvent({
+    db,
+    event: note,
+    forceReclassify: false,
+    relayHints: [],
+    threadContext: [],
+    referencedEvents: [],
+    nostrResolution: service,
+    classify,
+  });
+
+  await parseAndStoreEvent({
+    db,
+    event: zapReceipt,
+    forceReclassify: false,
+    relayHints: [],
+    threadContext: [],
+    referencedEvents: [note],
+    nostrResolution: service,
+    classify,
+  });
+
+  const zappedSats = getZappedSatsByTarget(db);
+  expect(zappedSats.get(note.id)).toBe(1000);
+
+  const listData = getNrListData({
+    db,
+    mode: 'for-you',
+    timeSelection: {
+      initialized: true,
+      ranges: [],
+    },
+  });
+
+  expect(listData.forYouScores[note.id]).toBeCloseTo(3.1, 2);
+
+  db.close();
+});
+
+test('repost_quote signal-record marks target event read when signal_read_post is true', async () => {
+  const db = new Database(':memory:');
+  createNrTable(db);
+
+  const note = finalizeEvent(
+    { kind: 1, created_at: 100, content: 'repost me', tags: [] },
+    generateSecretKey(),
+  );
+
+  await parseAndStoreEvent({
+    db,
+    event: note,
+    forceReclassify: false,
+    relayHints: [],
+    threadContext: [],
+    referencedEvents: [],
+    nostrResolution: {
+      seedEvents: async () => ({
+        seeded: 0,
+        skipped: 0,
+        invalid: 0,
+        results: [],
+      }),
+    } as unknown as NostrResolutionService,
+    classify: () => ({
+      topics: ['nostr'],
+      moods: ['focused'],
+      summary: 'summary',
+      language: 'en',
+      model: 'test',
+      confidence: 1,
+      skip: false,
+      skipReason: null,
+    }),
+  });
+
+  expect(getNr(db, note.id)?.read_at).toBeNull();
+
+  adaptSignalRecordCommand({
+    source: 'web',
+    db,
+    alias: 'nr',
+    parsed: {
+      options: {
+        target_event_id: note.id,
+        action_category: 'repost_quote',
+        signal_type: 'repost',
+        signal_outcome: 'without_signal',
+        signal_read_post: true,
+      },
+    },
+  } as unknown as NrCommandAdapterParams);
+
+  expect(getNr(db, note.id)?.read_at).not.toBeNull();
 
   db.close();
 });

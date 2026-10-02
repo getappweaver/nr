@@ -15,3 +15,20 @@ test('treats a marked NIP-10 mention as a post rather than a reply', () => {
     }),
   ).toBe('posts');
 });
+
+test('identifies kind 9735 as zaps category', () => {
+  expect(
+    categoryForNrEvent({
+      id: 'zap_receipt_id',
+      pubkey: 'wallet_pubkey',
+      created_at: 1,
+      kind: 9735,
+      content: '',
+      tags: [
+        ['p', 'recipient_pubkey'],
+        ['bolt11', 'lnbc...'],
+      ],
+      sig: 'signature',
+    }),
+  ).toBe('zaps');
+});

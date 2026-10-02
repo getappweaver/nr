@@ -4,7 +4,11 @@
 
 import { join } from 'path';
 
-import { Database, type Database as DatabaseType } from 'bun:sqlite';
+import {
+  Database,
+  type Database as DatabaseType,
+  type SQLQueryBindings,
+} from 'bun:sqlite';
 
 import { parseEventReferences } from '@src/nostr/event-references';
 import type { NostrResolutionService } from '@src/nostr/resolution-service';
@@ -52,6 +56,7 @@ import type {
 import { seedNostrEventsOrThrow } from './nostr-resolution';
 import { extractEventReferences } from './references';
 import { createNrSettingsTable, getNrSettings } from './settings';
+import { calculateZapScore, parseZapReceipt } from './zap';
 
 type EventRow = {
   id: string;
@@ -672,7 +677,7 @@ export function createNrTable(db: DatabaseType): void {
   db.run(`
     DELETE FROM nr_activity_targets
     WHERE activity_event_id IN (
-      SELECT id FROM nr_events WHERE kind NOT IN (6, 7, 16)
+      SELECT id FROM nr_events WHERE kind NOT IN (6, 7, 16, 9735)
     )
   `);
 
@@ -2397,7 +2402,12 @@ export async function parseAndStoreEvent({
     event.id,
   ]);
 
-  if (event.kind === 6 || event.kind === 7 || event.kind === 16) {
+  if (
+    event.kind === 6 ||
+    event.kind === 7 ||
+    event.kind === 16 ||
+    event.kind === 9735
+  ) {
     const targetIds = [
       ...new Set(
         [...threadContext, ...referencedEvents].map((item) => item.id),
@@ -3566,11 +3576,56 @@ export function buildNrSignalAggregates({
   return { topicAggregates, authorAggregates };
 }
 
+export function getZappedSatsByTarget(
+  db: DatabaseType,
+  targetEventIds?: string[],
+): Map<string, number> {
+  let sql = `
+    SELECT activity.target_event_id, e.raw_json
+    FROM nr_activity_targets activity
+    JOIN nr_events e ON e.id = activity.activity_event_id
+    WHERE e.kind = 9735
+  `;
+  const params: SQLQueryBindings[] = [];
+
+  if (targetEventIds && targetEventIds.length > 0) {
+    const placeholders = targetEventIds.map(() => '?').join(',');
+    sql += ` AND activity.target_event_id IN (${placeholders})`;
+    params.push(...targetEventIds);
+  }
+
+  const rows = db.prepare(sql).all(...params) as Array<{
+    target_event_id: string;
+    raw_json: string;
+  }>;
+
+  const result = new Map<string, number>();
+
+  for (const row of rows) {
+    try {
+      const zapReceipt = JSON.parse(row.raw_json) as NostrEvent;
+      const parsed = parseZapReceipt(zapReceipt);
+
+      if (parsed.amountSats > 0) {
+        result.set(
+          row.target_event_id,
+          (result.get(row.target_event_id) ?? 0) + parsed.amountSats,
+        );
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return result;
+}
+
 type ScoreNrEventForYouProps = {
   event: NrEvent;
   topicAffinities: ReadonlyMap<string, number>;
   learnedAuthorAffinities: ReadonlyMap<string, number>;
   explicitAuthorBiases: ReadonlyMap<string, number>;
+  zapSats?: number;
 };
 
 export function scoreNrEventForYou({
@@ -3578,6 +3633,7 @@ export function scoreNrEventForYou({
   topicAffinities,
   learnedAuthorAffinities,
   explicitAuthorBiases,
+  zapSats = 0,
 }: ScoreNrEventForYouProps): number {
   const topics = scoringTopics(event.topics);
   const normalizedPubkey = event.pubkey.toLowerCase();
@@ -3593,8 +3649,10 @@ export function scoreNrEventForYou({
       ? 0
       : (savedClassification.relevanceScore - 1) * 2;
 
+  const zapScore = calculateZapScore(zapSats);
+
   if (topics.length === 0) {
-    return authorScore + relevanceBias;
+    return authorScore + relevanceBias + zapScore;
   }
 
   const total = topics.reduce(
@@ -3602,7 +3660,7 @@ export function scoreNrEventForYou({
     0,
   );
 
-  return total / topics.length + authorScore + relevanceBias;
+  return total / topics.length + authorScore + relevanceBias + zapScore;
 }
 
 function topicAffinityScore(
@@ -3761,7 +3819,7 @@ export function getNrListData({
               `SELECT e.*, c.summary, c.model, c.classified_at, c.classification_json
          FROM nr_events e
          LEFT JOIN nr_classifications c ON c.event_id = e.id
-           WHERE e.kind IN (6, 7, 16) AND ${listModePredicate(mode)} ${activityTimePredicate.sql} ${activityTargetPredicate}
+           WHERE e.kind IN (6, 7, 16, 9735) AND ${listModePredicate(mode)} ${activityTimePredicate.sql} ${activityTargetPredicate}
          ORDER BY e.event_created_at DESC`,
             )
             .all(...activityTimePredicate.params) as EventRow[]
@@ -3796,6 +3854,7 @@ export function getNrListData({
     buildNrLearnedAuthorAffinities(interestSignals);
 
   const explicitAuthorBiases = buildNrExplicitAuthorBiases(authorPreferences);
+  const zappedSats = getZappedSatsByTarget(db);
 
   const rankedForYouEvents =
     mode === 'for-you'
@@ -3811,6 +3870,7 @@ export function getNrListData({
               topicAffinities,
               learnedAuthorAffinities,
               explicitAuthorBiases,
+              zapSats: zappedSats.get(event.id) ?? 0,
             }),
           }))
           .filter(({ score }) => score >= 0)
@@ -3865,6 +3925,7 @@ export function getNrListData({
             topicAffinities,
             learnedAuthorAffinities,
             explicitAuthorBiases,
+            zapSats: zappedSats.get(event.id) ?? 0,
           }),
         }));
 
@@ -3879,13 +3940,15 @@ export function getNrListData({
               topicAffinities,
               learnedAuthorAffinities,
               explicitAuthorBiases,
+              zapSats: zappedSats.get(event.id) ?? 0,
             }),
           }))
         : []),
     ].map(({ event, score }) => [event.id, score]),
   );
 
-  const scoreOf = (id: string): number => forYouScores[id] ?? Number.NEGATIVE_INFINITY;
+  const scoreOf = (id: string): number =>
+    forYouScores[id] ?? Number.NEGATIVE_INFINITY;
 
   const sortEventsByScore = (events: NrEvent[]) => {
     events.sort(
@@ -3896,7 +3959,10 @@ export function getNrListData({
   };
 
   const maxGroupScore = (group: NrTagGroup): number =>
-    group.events.reduce((max, event) => Math.max(max, scoreOf(event.id)), Number.NEGATIVE_INFINITY);
+    group.events.reduce(
+      (max, event) => Math.max(max, scoreOf(event.id)),
+      Number.NEGATIVE_INFINITY,
+    );
 
   const sortGroupsByScore = (groups: NrTagGroup[]) => {
     for (const group of groups) {

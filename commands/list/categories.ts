@@ -9,6 +9,7 @@ export const NR_FEED_CATEGORIES = [
   'reposts',
   'quotes',
   'reactions',
+  'zaps',
 ] as const;
 
 export type NrFeedCategory = (typeof NR_FEED_CATEGORIES)[number];
@@ -26,6 +27,7 @@ export const NR_FEED_CATEGORY_LABELS: Record<NrFeedCategory, string> = {
   reposts: 'Reposts',
   quotes: 'Quotes',
   reactions: 'Likes / Reactions',
+  zaps: 'Zaps',
 };
 
 export function normalizeNrFeedCategories(value: unknown): NrFeedCategory[] {
@@ -82,6 +84,10 @@ export function kindsForNrFeedCategories(
     kinds.add(7);
   }
 
+  if (categories.includes('zaps')) {
+    kinds.add(9735);
+  }
+
   return [...kinds];
 }
 
@@ -121,6 +127,10 @@ export function categoryForNrEvent(event: NostrEvent): NrFeedCategory | null {
 
   if (event.kind === 7) {
     return 'reactions';
+  }
+
+  if (event.kind === 9735) {
+    return 'zaps';
   }
 
   return null;
