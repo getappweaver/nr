@@ -3057,19 +3057,23 @@ type ListForYouCandidatesProps = {
   db: DatabaseType;
   hiddenEventIds: Set<string>;
   categories: NrFeedCategory[];
+  timeRanges: NrListTimeRange[];
 };
 
 function listForYouCandidates({
   db,
   hiddenEventIds,
   categories,
+  timeRanges,
 }: ListForYouCandidatesProps): NrEvent[] {
+  const timePredicate = eventTimeRangePredicate(timeRanges);
+
   const rows = db
     .prepare(
       `SELECT e.*, c.summary, c.model, c.classified_at, c.classification_json
        FROM nr_events e
        LEFT JOIN nr_classifications c ON c.event_id = e.id
-       WHERE e.read_at IS NULL
+        WHERE e.read_at IS NULL ${timePredicate.sql}
          AND NOT EXISTS (
            SELECT 1
            FROM nr_activity_targets activity_target
@@ -3079,7 +3083,7 @@ function listForYouCandidates({
          )
        ORDER BY e.event_created_at DESC`,
     )
-    .all() as EventRow[];
+    .all(...timePredicate.params) as EventRow[];
 
   return rows.map(rowToNrEvent).filter((event) => {
     if (
@@ -3195,10 +3199,17 @@ type UnreadTimelineCandidateRow = EventRow & {
   target_read: number;
 };
 
-function listUnreadFetchSlots(
-  db: DatabaseType,
-  categories: NrFeedCategory[],
-): NrUnreadFetchSlot[] {
+type ListUnreadFetchSlotsProps = {
+  db: DatabaseType;
+  categories: NrFeedCategory[];
+  signalAuthorPubkeys: ReadonlySet<string>;
+};
+
+function listUnreadFetchSlots({
+  db,
+  categories,
+  signalAuthorPubkeys,
+}: ListUnreadFetchSlotsProps): NrUnreadFetchSlot[] {
   const fetchWindows = (
     db
       .prepare(
@@ -3284,7 +3295,8 @@ function listUnreadFetchSlots(
 
     const visible =
       candidate.event.kind === 1
-        ? candidate.row.has_tag === 1 &&
+        ? (candidate.row.has_tag === 1 ||
+            signalAuthorPubkeys.has(candidate.event.pubkey.toLowerCase())) &&
           candidate.row.target_read === 0 &&
           !hiddenIdsByHour.get(candidate.since)?.has(candidate.event.id) &&
           eventHasCompleteContext(candidate.event)
@@ -3853,6 +3865,35 @@ export function getNrListData({
   const learnedAuthorAffinities =
     buildNrLearnedAuthorAffinities(interestSignals);
 
+  // Signals are the learned author history; selected slots constrain posts,
+  // not when the author was liked, replied to, or otherwise reviewed.
+  const eventsByAuthor = new Map<string, NrEvent[]>();
+
+  if (mode === 'timeline' && learnedAuthorAffinities.size > 0) {
+    for (const event of listForYouCandidates({
+      db,
+      hiddenEventIds,
+      categories: selectedCategories,
+      timeRanges: queryTimeRanges,
+    })) {
+      const pubkey = event.pubkey.toLowerCase();
+
+      if (!learnedAuthorAffinities.has(pubkey)) {
+        continue;
+      }
+
+      const events = eventsByAuthor.get(pubkey) ?? [];
+      events.push(event);
+      eventsByAuthor.set(pubkey, events);
+      visibleUnreadEventIds.add(event.id);
+    }
+  }
+
+  const authorGroups = [...eventsByAuthor].map(([pubkey, events]) => ({
+    pubkey,
+    events,
+  }));
+
   const explicitAuthorBiases = buildNrExplicitAuthorBiases(authorPreferences);
   const zappedSats = getZappedSatsByTarget(db);
 
@@ -3862,6 +3903,7 @@ export function getNrListData({
           db,
           hiddenEventIds,
           categories: selectedCategories,
+          timeRanges: [],
         })
           .map((event) => ({
             event,
@@ -3886,6 +3928,7 @@ export function getNrListData({
   const forYouEvents = selectedForYouEvents.map(({ event }) => event);
 
   const visibleEvents = [
+    ...authorGroups.flatMap((group) => group.events),
     ...topicGroups.flatMap((group) => group.events),
     ...moodGroups.flatMap((group) => group.events),
     ...languageGroups.flatMap((group) => group.events),
@@ -3913,7 +3956,7 @@ export function getNrListData({
       ? selectedForYouEvents
       : [
           ...new Map(
-            [...topicGroups, ...moodGroups]
+            [...topicGroups, ...moodGroups, ...authorGroups]
               .flatMap((group) => group.events)
               .filter((event) => event.kind === 1 || event.kind === 30023)
               .map((event) => [event.id, event]),
@@ -3958,7 +4001,7 @@ export function getNrListData({
     );
   };
 
-  const maxGroupScore = (group: NrTagGroup): number =>
+  const maxGroupScore = (group: Pick<NrTagGroup, 'events'>): number =>
     group.events.reduce(
       (max, event) => Math.max(max, scoreOf(event.id)),
       Number.NEGATIVE_INFINITY,
@@ -3979,6 +4022,17 @@ export function getNrListData({
 
   sortGroupsByScore(topicGroups);
   sortGroupsByScore(moodGroups);
+
+  for (const group of authorGroups) {
+    sortEventsByScore(group.events);
+  }
+
+  authorGroups.sort(
+    (left, right) =>
+      maxGroupScore(right) - maxGroupScore(left) ||
+      right.events.length - left.events.length ||
+      left.pubkey.localeCompare(right.pubkey),
+  );
 
   const signalAggregates =
     mode === 'signals'
@@ -4015,6 +4069,7 @@ export function getNrListData({
     topicGroups,
     moodGroups,
     languageGroups,
+    authorGroups,
     unreadTotal:
       mode === 'for-you'
         ? forYouEvents.length
@@ -4023,7 +4078,11 @@ export function getNrListData({
           : visibleUnreadEventIds.size,
     fetchCoverageNowSeconds: nowSeconds,
     fetchWindows,
-    unreadFetchSlots: listUnreadFetchSlots(db, selectedCategories),
+    unreadFetchSlots: listUnreadFetchSlots({
+      db,
+      categories: selectedCategories,
+      signalAuthorPubkeys: new Set(learnedAuthorAffinities.keys()),
+    }),
     interactions: listNrInteractions(db),
     interestSignals,
     signalTopicAggregates: signalAggregates.topicAggregates,

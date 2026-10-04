@@ -136,6 +136,30 @@ explicitAuthorBias = {
 
 The final score combines topic affinity, learned author affinity, and explicit author bias. Selecting an author during signal review never writes an explicit author preference.
 
+## Timeline Author Discovery
+
+The Timeline tree includes an Authors section alongside Topics, Moods, and
+Languages. It groups eligible unread posts by authors present in reviewed signal
+history, including posts without topic or mood tags. Both positive and negative
+author signals qualify; a topic-only signal with no selected author does not.
+Explicit author preferences alone do not create a signal-matched group.
+
+Selected hourly slots constrain post creation times, not signal timestamps.
+Existing kind, read-state, resolved-context, and hidden-reference filtering also
+apply. Author groups and their posts follow existing score ordering. Cached
+display names are preferred, with shortened pubkeys as a fallback. Author posts
+participate in profile/context hydration and deduplicated unread counts, including
+the historical unread-slot list.
+
+- [x] Implement slot-scoped author groups, Authors tree rendering, hydration,
+  score ordering, and unread-count integration.
+- [x] Targeted ESLint and scoped NR TypeScript checks.
+- [x] One-off in-memory check of slot boundaries, historical/case-normalized and
+  negative author signals, read/unmatched exclusion, tagless posts, unread totals,
+  cached author labels, nested post rendering, and empty slots.
+- [x] One-off in-memory check that author-only unread slots appear and disappear
+  with the last matching post's read state.
+
 ## Validation
 
 `signal-record` enforces these server-side constraints:

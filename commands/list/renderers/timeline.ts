@@ -1,31 +1,40 @@
 import type { WebNode } from '@src/web/ui-schema';
 
+import type { NrAuthorGroup } from '../../shared/types';
+
+import { authorsSectionNode } from './authors';
 import { sectionNode, type ListModeNodesProps } from './event-nodes';
 
-export function timelineNodes({
-  alias,
-  topicGroups,
-  moodGroups,
-  languageGroups,
-  profiles,
-  interactions,
-  localPreferences,
-  authorPreferences,
-  sharePrefixes,
-  translationTargetLanguage,
-  rankingScores,
-  archiveSignalReviewMode,
-  likeSignalReviewMode,
-  replySignalReviewMode,
-  repostQuoteSignalReviewMode,
-  resolveReferencesAutomatically,
-  mode,
-  selectedTimeRanges,
-  archivedIds,
-  evaluatedImageCounts,
-  followedPubkeys,
-  conversationContextEvents,
-}: ListModeNodesProps): WebNode[] {
+type TimelineNodesProps = ListModeNodesProps & {
+  authorGroups: NrAuthorGroup[];
+};
+
+export function timelineNodes(props: TimelineNodesProps): WebNode[] {
+  const {
+    alias,
+    topicGroups,
+    moodGroups,
+    languageGroups,
+    profiles,
+    interactions,
+    localPreferences,
+    authorPreferences,
+    sharePrefixes,
+    translationTargetLanguage,
+    rankingScores,
+    archiveSignalReviewMode,
+    likeSignalReviewMode,
+    replySignalReviewMode,
+    repostQuoteSignalReviewMode,
+    resolveReferencesAutomatically,
+    mode,
+    selectedTimeRanges,
+    archivedIds,
+    evaluatedImageCounts,
+    followedPubkeys,
+    conversationContextEvents,
+  } = props;
+
   return [
     sectionNode({
       alias,
@@ -99,5 +108,6 @@ export function timelineNodes({
       followedPubkeys,
       conversationContextEvents,
     }),
+    authorsSectionNode(props),
   ];
 }

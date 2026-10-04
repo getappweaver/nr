@@ -45,6 +45,11 @@ export type NrTagGroup = {
   events: NrEvent[];
 };
 
+export type NrAuthorGroup = {
+  pubkey: string;
+  events: NrEvent[];
+};
+
 export type NrListMode =
   'timeline' | 'for-you' | 'profile' | 'archive' | 'signals';
 
@@ -200,6 +205,7 @@ export type NrListData = {
   topicGroups: NrTagGroup[];
   moodGroups: NrTagGroup[];
   languageGroups: NrTagGroup[];
+  authorGroups: NrAuthorGroup[];
   unreadTotal: number;
   fetchCoverageNowSeconds: number;
   fetchWindows: NrFetchWindow[];

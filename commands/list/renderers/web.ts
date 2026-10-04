@@ -410,6 +410,7 @@ export function renderNrListWeb({
         ...listData.topicGroups.flatMap((group) => group.events),
         ...listData.moodGroups.flatMap((group) => group.events),
         ...listData.languageGroups.flatMap((group) => group.events),
+        ...listData.authorGroups.flatMap((group) => group.events),
         ...listData.forYouEvents,
         ...listData.activityEvents,
         ...listData.conversationContextEvents,
@@ -472,7 +473,7 @@ export function renderNrListWeb({
             filterPlaceholder:
               listData.mode === 'signals'
                 ? 'Filter signals, topics, authors'
-                : 'Filter tags, moods, posts',
+                : 'Filter tags, moods, authors, posts',
             toolbarActions: [
               ...(listData.mode !== 'archive' && listData.mode !== 'signals'
                 ? [
@@ -523,7 +524,10 @@ export function renderNrListWeb({
                 })
               : []),
             ...(listData.mode === 'timeline'
-              ? timelineNodes(modeNodesProps)
+              ? timelineNodes({
+                  ...modeNodesProps,
+                  authorGroups: listData.authorGroups,
+                })
               : []),
             ...(listData.mode === 'archive'
               ? archiveNodes(modeNodesProps)

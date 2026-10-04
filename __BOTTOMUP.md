@@ -63,6 +63,7 @@ Nostr Radar is an AppWeaver plugin for fetching, classifying, storing, and revie
 
 ## Notes
 - Plugin data is stored in a local SQLite database.
+- Timeline Authors groups show unread posts by authors selected in recorded signals, constrained by selected slots and kind filters, including posts without topic/mood tags. Historical signals identify authors; slot selection filters posts, not signal timestamps. Groups and posts use feed score ordering.
 - The `/nr` command surface is defined through subcommand modules.
 - LLM mode uses the configured agent backend and heuristic fallback. Classifier mode uses manual, event-tag, signal, and configured candidates; topic and mood Choice questions each receive up to 10 candidates by default and run together in one Jev request per event. The hourly fetch job reads the current mode on each run. Signal moods are captured for new signals and recovered from classified target events for older signals.
 
