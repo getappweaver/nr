@@ -10,6 +10,7 @@ import type {
   WebNostrPostReference,
 } from '@src/web/ui-schema';
 
+import { extractDirectActivityTargetId } from '../../../activity';
 import { parseNostrEventArray } from '../../../nostr-resolution';
 import {
   extractAddressReferences,
@@ -710,6 +711,7 @@ type MarkActionProps = {
   eventId: string;
   eventIds?: string[];
   entityEventId?: string;
+  entityEventIds?: string[];
   state: 'read' | 'unread' | 'archived' | 'unarchived';
   mode: NrListMode | null;
 };
@@ -719,6 +721,7 @@ function markAction({
   eventId,
   eventIds = [eventId],
   entityEventId = eventId,
+  entityEventIds,
   state,
   mode,
 }: MarkActionProps) {
@@ -740,14 +743,16 @@ function markAction({
     });
   }
 
+  const allEntityIds = [
+    ...new Set([entityEventId, ...(entityEventIds ?? []), ...eventIds]),
+  ];
+
   return optimisticCommandAction({
-    mutations: [
-      {
-        type: 'removeEntity',
-        entityKey: entityKey(entityEventId),
-        pruneEmptyParents: true,
-      },
-    ],
+    mutations: allEntityIds.map((id) => ({
+      type: 'removeEntity' as const,
+      entityKey: entityKey(id),
+      pruneEmptyParents: true,
+    })),
     command: {
       command: alias,
       subcommand: 'mark',
@@ -773,6 +778,7 @@ type ReadActionProps = {
   eventId: string;
   eventIds?: string[];
   entityEventId?: string;
+  entityEventIds?: string[];
   mode: NrListMode | null;
 };
 
@@ -781,6 +787,7 @@ function readAction({
   eventId,
   eventIds,
   entityEventId,
+  entityEventIds,
   mode,
 }: ReadActionProps) {
   return markAction({
@@ -788,6 +795,7 @@ function readAction({
     eventId,
     eventIds,
     entityEventId,
+    entityEventIds,
     state: 'read',
     mode,
   });
@@ -1077,6 +1085,7 @@ type MarkRawEventActionProps = {
   event: NostrEvent;
   state: 'read' | 'archived' | 'unarchived';
   mode: NrListMode;
+  additionalEventIds?: string[];
 };
 
 function markRawEventAction({
@@ -1084,6 +1093,7 @@ function markRawEventAction({
   event,
   state,
   mode,
+  additionalEventIds,
 }: MarkRawEventActionProps) {
   if (state === 'archived' || state === 'unarchived') {
     return commandSequenceAction({
@@ -1103,19 +1113,25 @@ function markRawEventAction({
     });
   }
 
+  const allEntityIds = [...new Set([event.id, ...(additionalEventIds ?? [])])];
+
   return optimisticCommandAction({
-    mutations: [
-      {
-        type: 'removeEntity',
-        entityKey: entityKey(event.id),
-        pruneEmptyParents: true,
-      },
-    ],
+    mutations: allEntityIds.map((id) => ({
+      type: 'removeEntity' as const,
+      entityKey: entityKey(id),
+      pruneEmptyParents: true,
+    })),
     command: {
       command: alias,
       subcommand: 'mark',
       arguments: { event_id: event.id },
-      options: { [state]: true, event_json: JSON.stringify(event) },
+      options: {
+        [state]: true,
+        event_json: JSON.stringify(event),
+        ...(additionalEventIds && additionalEventIds.length > 0
+          ? { event_ids: [event.id, ...additionalEventIds].join(',') }
+          : {}),
+      },
       ...(state === 'read'
         ? {
             monitoring: {
@@ -1917,12 +1933,16 @@ function threadContextReferences({
       createdAt: contextEvent.created_at,
       content: contextEvent.content,
       source: eventSource(contextEvent),
-      readAction: markRawEventAction({
-        alias,
-        event: contextEvent,
-        state: 'read',
-        mode,
-      }),
+      readAction:
+        'read_at' in contextEvent &&
+        (contextEvent as { read_at?: unknown }).read_at !== null
+          ? undefined
+          : markRawEventAction({
+              alias,
+              event: contextEvent,
+              state: 'read',
+              mode,
+            }),
       likeAction: likeNostrEventAction({
         alias,
         event: contextEvent,
@@ -2187,11 +2207,19 @@ export function eventNode({
 
   const filterText = eventFilterText({ event, profiles });
 
+  const allEventIds = [
+    ...new Set([
+      ...(readEventIds ?? [readActionEventId ?? event.id]),
+      ...conversationActivities.map((activity) => activity.id),
+    ]),
+  ];
+
   const postReadAction = readAction({
     alias,
     eventId: readActionEventId ?? event.id,
-    eventIds: readEventIds,
+    eventIds: allEventIds,
     entityEventId: event.id,
+    entityEventIds: conversationActivities.map((activity) => activity.id),
     mode,
   });
 
@@ -2384,10 +2412,22 @@ type GroupNodeProps = {
 };
 
 function activityTarget(event: NrEvent): NostrEvent | null {
+  let directTargetId: string | null = null;
+  try {
+    const raw = JSON.parse(event.raw_json) as NostrEvent;
+    directTargetId = extractDirectActivityTargetId(raw);
+  } catch {
+    // ignore
+  }
+
   const context = [...threadContextEvents(event), ...referencedEvents(event)];
 
-  if (context[0]) {
-    return context[0];
+  if (directTargetId) {
+    const matched = context.find((item) => item.id === directTargetId);
+
+    if (matched) {
+      return matched;
+    }
   }
 
   if (event.kind === 6) {
@@ -2400,7 +2440,7 @@ function activityTarget(event: NrEvent): NostrEvent | null {
     }
   }
 
-  return null;
+  return context[0] ?? null;
 }
 
 function isActivityEvent(event: Pick<NostrEvent, 'kind'>): boolean {
@@ -2575,6 +2615,15 @@ function mergedActivityNode({
     }
   });
 
+  const activityReadAction = readAction({
+    alias,
+    eventId: target.id,
+    eventIds: [target.id, ...activities.map((activity) => activity.id)],
+    entityEventId: target.id,
+    entityEventIds: activities.map((activity) => activity.id),
+    mode,
+  });
+
   return {
     type: 'element',
     tag: 'treeItem',
@@ -2598,6 +2647,7 @@ function mergedActivityNode({
           archived,
           mode,
           sharePrefixes,
+          readActionOverride: activityReadAction,
         }),
       ),
       el('stack', { fill: true }, [
@@ -2629,6 +2679,7 @@ function mergedActivityNode({
           signalCandidateTopics: rankingEvent
             ? signalReviewTopics(rankingEvent)
             : [],
+          readActionOverride: activityReadAction,
         }),
       ]),
     ]),
@@ -4215,6 +4266,8 @@ export function profileEventNode({
   mode,
   renderScope,
   archivedIds,
+  entityKeyOverride,
+  readActionOverride,
 }: {
   alias: string;
   profileEvent: NrProfileEvent;
@@ -4225,6 +4278,8 @@ export function profileEventNode({
   mode: NrListMode;
   renderScope: string;
   archivedIds: Set<string>;
+  entityKeyOverride?: string;
+  readActionOverride?: ReturnType<typeof readAction>;
 }): WebNode {
   const { event, referencedEvents } = profileEvent;
 
@@ -4355,7 +4410,11 @@ export function profileEventNode({
     type: 'element',
     tag: 'treeItem',
     renderKey: `nr:${renderScope}:source:${event.id}`,
-    props: { id: `nr-profile-${event.id}`, defaultExpanded: false },
+    props: {
+      id: `nr-profile-${event.id}`,
+      entityKey: entityKeyOverride ?? entityKey(event.id),
+      defaultExpanded: false,
+    },
     summary: el('stack', { gap: 'xs', fill: true }, [
       ...(event.kind === 7 || event.kind === 9735
         ? referencedEvents.map((reference) =>
@@ -4375,6 +4434,7 @@ export function profileEventNode({
               mode,
               renderScope: `${renderScope}:source:${event.id}:reference:${reference.id}`,
               signalCandidateTopics: [],
+              readActionOverride,
             }),
           )
         : [
@@ -4395,6 +4455,7 @@ export function profileEventNode({
               mode,
               renderScope: `${renderScope}:source:${event.id}`,
               signalCandidateTopics: [],
+              readActionOverride,
             }),
           ]),
     ]),
@@ -4431,6 +4492,19 @@ function activityEventNode({
     return el('text', { tone: 'muted' }, [text(`Invalid event ${event.id}`)]);
   }
 
+  const directTargetId = extractDirectActivityTargetId(rawEvent);
+
+  const eventIds = [event.id, ...(directTargetId ? [directTargetId] : [])];
+
+  const nodeReadAction = readAction({
+    alias,
+    eventId: directTargetId ?? event.id,
+    eventIds,
+    entityEventId: event.id,
+    entityEventIds: directTargetId ? [directTargetId] : [],
+    mode,
+  });
+
   return profileEventNode({
     alias,
     profileEvent: {
@@ -4447,5 +4521,7 @@ function activityEventNode({
     mode,
     renderScope,
     archivedIds,
+    entityKeyOverride: entityKey(event.id),
+    readActionOverride: nodeReadAction,
   });
 }

@@ -4,9 +4,13 @@ All notable changes for each version are listed under the corresponding `v*.*.*`
 Tags and this file are updated by the post-commit hook when you commit with `--patch`, `--minor`, or `--major` (see CONTRIBUTING.md).
 You can also run `bun run release:changelog` to rewrite this file from tags.
 
+## [v4.4.0] - 2026-10-06
+
+- feat: changed read behavior by excluding references of already read reactions and zaps (3363e77)
+
 ## [v4.3.0] - 2026-10-04
 
-- feat: added author groups to the timeline view (3798276)
+- feat: added author groups to the timeline view (dcf7f2e)
 
 ## [v4.2.0] - 2026-10-02
 

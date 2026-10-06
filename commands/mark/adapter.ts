@@ -113,12 +113,6 @@ export async function adaptMarkCommand(
     return usage(params.prefix, params.alias);
   }
 
-  if (eventIds.length > 1) {
-    markEventIdsState({ db: params.db, eventIds, state });
-
-    return `Marked ${state}: ${eventIds.length} events`;
-  }
-
   // Store-first: a raw event action (Profile embeds, thread context)
   // carries the full event because the target may live only in the live
   // profile cache, not in nr_events. Store it before marking so the mark
@@ -139,6 +133,12 @@ export async function adaptMarkCommand(
         classify: classifyEvent,
       });
     }
+  }
+
+  if (eventIds.length > 1) {
+    markEventIdsState({ db: params.db, eventIds, state });
+
+    return `Marked ${state}: ${eventIds.length} events`;
   }
 
   const markEvent = () =>

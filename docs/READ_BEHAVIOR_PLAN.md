@@ -1,0 +1,36 @@
+# Implementation Plan: Fix NR Read Behavior for Reactions and Zaps
+
+## Status
+- [x] 1. Direct Activity Target Extraction
+  - [x] Implement `extractDirectActivityTargetId(event: NostrEvent): string | null` in `plugins/nr/activity.ts` supporting kind 7 (last e tag or marker=reply) and kind 9735 (via `parseZapReceipt`), preserving kind 6/16 repost target logic.
+  - [x] Update `parseAndStoreEvent` to populate `nr_activity_targets` with only the exact direct target.
+- [x] 2. Durable Read State Persistence (`nr_read_events`)
+  - [x] Create `nr_read_events(event_id TEXT PRIMARY KEY, read_at INTEGER NOT NULL)` schema in `createNrTable`.
+  - [x] Migrate/backfill existing read events from `nr_events` into `nr_read_events`.
+  - [x] Add `isEventRead(db, eventId)` helper function to query read status across `nr_read_events` and `nr_events`.
+- [x] 3. Read Cascades & Mark/Read Command Adapters
+  - [x] Update `markEventIdsState` to cascade `read_at` to direct activities in `nr_activity_targets` for all selected and related events.
+  - [x] Sync `markEventIdsState` with `nr_read_events` (insert on `read`, delete on `unread`).
+  - [x] Update `markEventState` to persist target ID to `nr_read_events`.
+  - [x] Ensure store-first in `adaptMarkCommand` runs before multi-ID check if `event_json` is provided.
+- [x] 4. Future Fetch Handling in `parseAndStoreEvent`
+  - [x] In `parseAndStoreEvent`, check if direct target is read in either `nr_read_events` or `nr_events.read_at`.
+  - [x] Inherit `read_at` for incoming activity events and sync to `nr_read_events`.
+- [x] 5. List Queries and Unread Slot Counts
+  - [x] Update `unreadTargetPredicate` in `listTags` and `listEventsForTag`.
+  - [x] Update target filter in `listForYouCandidates`.
+  - [x] Update `target_read` calculation in `listUnreadFetchSlots`.
+  - [x] Update `activityTargetPredicate` in timeline/activity queries.
+  - [x] Ensure archive mode preserves its existing behavior.
+- [x] 6. Client-Side Immediate Removal & Rendering
+  - [x] Update `activityTarget()` in `plugins/nr/commands/list/renderers/event-nodes.ts` to locate exact direct target matching `extractDirectActivityTargetId` instead of blind `context[0]`.
+  - [x] Update `markAction()` / `readAction()` to emit `removeEntity` mutations for all relevant entity keys (`entityEventId`, `eventIds`, and associated activity IDs).
+  - [x] Update `mergedActivityNode()` to pass all activity IDs in `readActionOverride` to both the overflow menu and profile post node.
+  - [x] Ensure conversation cards containing read parent context are not removed merely because the parent is read.
+  - [x] Ensure `activityEventNode()` has its own `entityKey` and removes both activity and target on read.
+- [x] 7. Existing Data Migration & Backfill
+  - [x] Clean up false targets in `nr_activity_targets` for kinds 7 and 9735.
+  - [x] Mark existing cached activities as read if their target is read.
+- [x] 8. Static Checks & Verification
+  - [x] Run `bunx tsc --noEmit` to verify type safety (passed with 0 errors).
+  - [x] Verified all 9 acceptance scenarios and client rendering checks with in-memory test script (`scratch/verify_read_behavior.ts`).
