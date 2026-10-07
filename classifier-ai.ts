@@ -98,6 +98,7 @@ export async function classifyEventWithNrAi({
       threadContextEvents,
       referencedEvents: promptReferencedEvents,
       abortSignal,
+      capabilities: storedCtx.capabilities,
     });
   }
 

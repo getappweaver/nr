@@ -14,24 +14,10 @@ export const settingsDefinition = (
     {
       name: 'mode',
       flag: '--mode',
-      summary: 'Evaluation mode (LLM or Jev classifier).',
+      summary: 'Evaluation mode (LLM or System One classifier).',
       kind: 'string',
       required: false,
       choices: ['llm', 'classifier'],
-    },
-    {
-      name: 'jev_api_key',
-      flag: '--jev-api-key',
-      summary: 'Jev API key (reset clears it).',
-      kind: 'string',
-      required: false,
-    },
-    {
-      name: 'jev_api_base',
-      flag: '--jev-api-base',
-      summary: 'Jev API base URL.',
-      kind: 'string',
-      required: false,
     },
     {
       name: 'jev_topics',

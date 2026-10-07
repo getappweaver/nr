@@ -1,8 +1,12 @@
-# How to add a new agent
+# Nostr Radar working instructions
 
-After creating a new plugin with `bun run plugin:new`, you need to publish the plugin to Nostr.
+Follow the [core instructions](../../AGENTS.md). Read local `README.md` and relevant `docs/` before editing a module. Update those docs when behavior or architecture changes; use Memory for committed code/Markdown discovery when indexed.
 
-Keep `__BOTTOMUP.md` in the plugin root up to date when layout or responsibilities change (appweaver-file bottom-up docs; `scope_root: true` is set in the template).
+Only create or edit `AGENTS.md` when the user explicitly asks for instruction changes. Do not regenerate legacy bottom-up artifacts during ordinary maintenance.
+
+## Release workflow
+
+Use these steps when the user explicitly requests publishing the plugin:
 
 1. Go to the plugin folder
 1. run `git init`

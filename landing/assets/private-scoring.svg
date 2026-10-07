@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 320" role="img" aria-labelledby="title description">
+  <title id="title">One identity, independent local scoring</title>
+  <desc id="description">Work and personal Nostr Radar instances share a Nostr identity but keep their topic preferences and ranking signals separate.</desc>
+  <rect width="800" height="320" fill="#101010"/>
+  <g fill="#f8dc3d" font-family="monospace" text-anchor="middle">
+    <text x="400" y="48" font-size="22">SAME NOSTR IDENTITY</text>
+    <path d="M400 64v32H210v30m190-30h190v30" fill="none" stroke="#f8dc3d" stroke-width="2"/>
+    <rect x="40" y="128" width="340" height="150" fill="none" stroke="#f8dc3d"/>
+    <rect x="420" y="128" width="340" height="150" fill="none" stroke="#f8dc3d"/>
+    <text x="210" y="166" font-size="22">WORK INSTANCE</text>
+    <text x="590" y="166" font-size="22">PERSONAL INSTANCE</text>
+    <g font-size="16" fill="#eeeeee">
+      <text x="210" y="206">Work topics + local signals</text>
+      <text x="210" y="244">Independent ranking</text>
+      <text x="590" y="206">Personal topics + local signals</text>
+      <text x="590" y="244">Independent ranking</text>
+    </g>
+  </g>
+</svg>

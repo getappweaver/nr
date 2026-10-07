@@ -1,6 +1,12 @@
 import { Database } from 'bun:sqlite';
 import { expect, test } from 'bun:test';
 
+import type {
+  SystemOneEvaluateInputV1,
+  SystemOneEvaluateOutputV1,
+} from '@src/capabilities/system-one.v1';
+import type { CapabilityClient } from '@src/capabilities/types';
+
 import { classifyEventWithJev } from './classifier-jev';
 import type { NostrEvent } from './commands/shared/types';
 import {
@@ -24,6 +30,29 @@ const event: NostrEvent = {
   sig: 'sig',
 };
 
+function systemOneCapabilities(
+  respond: (input: SystemOneEvaluateInputV1) => SystemOneEvaluateOutputV1,
+): CapabilityClient {
+  return {
+    listProviders: () => [],
+    invoke: async ({ input }: { input: unknown }) => ({
+      status: 'success',
+      provider: {} as never,
+      output: respond(input as SystemOneEvaluateInputV1),
+    }),
+  } as unknown as CapabilityClient;
+}
+
+const missingCapabilities = {
+  listProviders: () => [],
+  invoke: async () => ({
+    status: 'missing',
+    capability: { name: 'system-one', version: 1 },
+    operation: 'capability:v1:system-one.evaluate',
+    requestedProviderId: null,
+  }),
+} as unknown as CapabilityClient;
+
 test('Jev classifier sends bounded candidate questions and maps typed judgments', async () => {
   const db = new Database(':memory:');
 
@@ -34,44 +63,39 @@ test('Jev classifier sends bounded candidate questions and maps typed judgments'
     ...getNrSettings(db),
     db,
     mode: 'classifier',
-    jevApiKey: 'secret',
     jevTopics: 'nostr, music',
   });
 
-  const originalFetch = globalThis.fetch;
-  let request: Record<string, any> = {};
+  const captured = { request: null as SystemOneEvaluateInputV1 | null };
 
-  globalThis.fetch = (async (_url, init) => {
-    request = JSON.parse(String(init?.body));
+  const capabilities = systemOneCapabilities((input) => {
+    captured.request = input;
 
-    return new Response(
-      JSON.stringify({
-        model: 'jev-1.13.0',
-        answers: {
-          topic_0: {
-            type: 'choice',
-            choice: 'nostr',
-            confidence: 0.9,
-            probabilities: { nostr: 0.9, music: 0.1 },
-          },
-          mood_0: {
-            type: 'choice',
-            choice: 'neutral',
-            confidence: 0.9,
-            probabilities: { neutral: 0.9 },
-          },
-          language: {
-            type: 'choice',
-            choice: 'en',
-            confidence: 0.9,
-            probabilities: { en: 0.9 },
-          },
-          relevance: { type: 'score', score: 2.1, confidence: 0.85 },
+    return {
+      model: 'jev-1.13.0',
+      answers: {
+        topic_0: {
+          type: 'choice',
+          choice: 'nostr',
+          confidence: 0.9,
+          probabilities: { nostr: 0.9, music: 0.1 },
         },
-      }),
-      { status: 200 },
-    );
-  }) as typeof fetch;
+        mood_0: {
+          type: 'choice',
+          choice: 'neutral',
+          confidence: 0.9,
+          probabilities: { neutral: 0.9 },
+        },
+        language: {
+          type: 'choice',
+          choice: 'en',
+          confidence: 0.9,
+          probabilities: { en: 0.9 },
+        },
+        relevance: { type: 'score', score: 2.1, confidence: 0.85 },
+      },
+    };
+  });
 
   try {
     const result = await classifyEventWithJev({
@@ -80,6 +104,7 @@ test('Jev classifier sends bounded candidate questions and maps typed judgments'
       threadContextEvents: [],
       referencedEvents: [],
       abortSignal: null,
+      capabilities,
     });
 
     expect(result).toMatchObject({
@@ -92,13 +117,11 @@ test('Jev classifier sends bounded candidate questions and maps typed judgments'
       skip: false,
     });
 
-    expect(request.model).toBe('jev-latest');
-    expect(request.questions.topic_0.criteria).toHaveProperty('none');
-    expect(request.questions.topic_0.type).toBe('choice');
-    expect(request.questions.mood_0.type).toBe('choice');
-    expect(request.state.preferences).toContain('Interested topics');
+    expect(captured.request?.model).toBeNull();
+    expect(captured.request?.questions.topic_0?.type).toBe('choice');
+    expect(captured.request?.questions.mood_0?.type).toBe('choice');
+    expect(captured.request?.state.preferences).toContain('Interested topics');
   } finally {
-    globalThis.fetch = originalFetch;
     db.close();
   }
 });
@@ -113,7 +136,6 @@ test('Jev clones topic and mood Choice questions in one request for large catalo
     ...getNrSettings(db),
     db,
     mode: 'classifier',
-    jevApiKey: 'secret',
     jevTopics: Array.from({ length: 50 }, (_, index) => `topic-${index}`).join(
       ', ',
     ),
@@ -133,22 +155,17 @@ test('Jev clones topic and mood Choice questions in one request for large catalo
     source: 'private',
   });
 
-  const originalFetch = globalThis.fetch;
-  const requests: Array<Record<string, any>> = [];
+  const requests: SystemOneEvaluateInputV1[] = [];
 
-  globalThis.fetch = (async (_url, init) => {
-    const request = JSON.parse(String(init?.body));
-
+  const capabilities = systemOneCapabilities((request) => {
     requests.push(request);
 
-    const answers: Record<string, unknown> = {
+    const answers: SystemOneEvaluateOutputV1['answers'] = {
       language: { type: 'choice', choice: 'en', confidence: 1 },
       relevance: { type: 'score', score: 1, confidence: 1 },
     };
 
-    for (const [id, question] of Object.entries(request.questions) as Array<
-      [string, { criteria: Record<string, unknown> }]
-    >) {
+    for (const [id, question] of Object.entries(request.questions)) {
       if (!id.startsWith('topic_') && !id.startsWith('mood_')) {
         continue;
       }
@@ -168,8 +185,8 @@ test('Jev clones topic and mood Choice questions in one request for large catalo
       };
     }
 
-    return new Response(JSON.stringify({ model: 'jev-1.13.0', answers }));
-  }) as typeof fetch;
+    return { model: 'jev-1.13.0', answers };
+  });
 
   try {
     const result = await classifyEventWithJev({
@@ -178,6 +195,7 @@ test('Jev clones topic and mood Choice questions in one request for large catalo
       threadContextEvents: [],
       referencedEvents: [],
       abortSignal: null,
+      capabilities,
     });
 
     expect(result.topics).toEqual(['topic-49']);
@@ -212,12 +230,11 @@ test('Jev clones topic and mood Choice questions in one request for large catalo
       topicQuestions.flatMap(([, question]) => Object.keys(question.criteria)),
     ).toContain('topic-49');
   } finally {
-    globalThis.fetch = originalFetch;
     db.close();
   }
 });
 
-test('classifier mode requires credentials instead of silently falling back', async () => {
+test('classifier mode requires an installed System One provider instead of silently falling back', async () => {
   const db = new Database(':memory:');
 
   createNrTable(db);
@@ -231,14 +248,15 @@ test('classifier mode requires credentials instead of silently falling back', as
         threadContextEvents: [],
         referencedEvents: [],
         abortSignal: null,
+        capabilities: missingCapabilities,
       }),
-    ).rejects.toThrow('Jev API key is required');
+    ).rejects.toThrow('No System One capability provider');
   } finally {
     db.close();
   }
 });
 
-test('classifier retries a rate-limited Jev request', async () => {
+test('classifier delegates retries to the System One capability provider', async () => {
   const db = new Database(':memory:');
 
   createNrTable(db);
@@ -248,40 +266,34 @@ test('classifier retries a rate-limited Jev request', async () => {
     ...getNrSettings(db),
     db,
     mode: 'classifier',
-    jevApiKey: 'secret',
     jevTopics: 'nostr',
   });
 
-  const originalFetch = globalThis.fetch;
   let calls = 0;
 
-  globalThis.fetch = (async (_url, _init) => {
+  const capabilities = systemOneCapabilities((_input) => {
     calls += 1;
 
-    return calls === 1
-      ? new Response('', { status: 429 })
-      : new Response(
-          JSON.stringify({
-            model: 'jev-1.13.0',
-            answers: {
-              topic_0: {
-                type: 'choice',
-                choice: 'none',
-                confidence: 1,
-                probabilities: { none: 1 },
-              },
-              mood_0: {
-                type: 'choice',
-                choice: 'neutral',
-                confidence: 1,
-                probabilities: { neutral: 1 },
-              },
-              language: { type: 'choice', choice: 'en', confidence: 1 },
-              relevance: { type: 'score', score: 1, confidence: 1 },
-            },
-          }),
-        );
-  }) as typeof fetch;
+    return {
+      model: 'jev-1.13.0',
+      answers: {
+        topic_0: {
+          type: 'choice',
+          choice: 'none',
+          confidence: 1,
+          probabilities: { none: 1 },
+        },
+        mood_0: {
+          type: 'choice',
+          choice: 'neutral',
+          confidence: 1,
+          probabilities: { neutral: 1 },
+        },
+        language: { type: 'choice', choice: 'en', confidence: 1 },
+        relevance: { type: 'score', score: 1, confidence: 1 },
+      },
+    };
+  });
 
   try {
     await classifyEventWithJev({
@@ -290,11 +302,11 @@ test('classifier retries a rate-limited Jev request', async () => {
       threadContextEvents: [],
       referencedEvents: [],
       abortSignal: null,
+      capabilities,
     });
 
-    expect(calls).toBe(2);
+    expect(calls).toBe(1);
   } finally {
-    globalThis.fetch = originalFetch;
     db.close();
   }
 });

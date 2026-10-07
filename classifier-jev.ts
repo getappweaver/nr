@@ -1,26 +1,25 @@
 import type { Database } from 'bun:sqlite';
 
+import {
+  SystemOneV1,
+  type SystemOneEvaluateInputV1,
+} from '@src/capabilities/system-one.v1';
+import type { CapabilityClient } from '@src/capabilities/types';
+
 import type { EventClassification, NostrEvent } from './commands/shared/types';
 import { buildNrPluginContextText } from './context';
 import { listActiveNrTaxonomyTerms, listNrInterestSignals } from './db';
-import { getNrJevApiKey, getNrSettings } from './settings';
+import { getNrSettings } from './settings';
 
 type ChoiceAnswer = {
   type: 'choice';
   choice: string;
-  probabilities: Record<string, number>;
+  probabilities?: Record<string, number>;
   confidence: number;
 };
 type ScoreAnswer = { type: 'score'; score: number; confidence: number };
 type JevAnswer = ChoiceAnswer | ScoreAnswer;
-type JevResult = { model?: string; answers: Record<string, JevAnswer> };
-type JevQuestion =
-  | {
-      type: 'choice';
-      instructions: string;
-      criteria: Record<string, string | null>;
-    }
-  | { type: 'score'; instructions: string; criteria: string[] };
+type JevQuestion = SystemOneEvaluateInputV1['questions'][string];
 
 function candidates(raw: string, extra: string[], limit: number): string[] {
   return [
@@ -60,73 +59,22 @@ function batches<T>(items: T[], size: number): T[][] {
   return result;
 }
 
-async function requestJev({
-  url,
-  apiKey,
-  body,
-  abortSignal,
-}: {
-  url: string;
-  apiKey: string;
-  body: string;
-  abortSignal: AbortSignal | null;
-}): Promise<JevResult> {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body,
-      signal: abortSignal,
-    });
-
-    if (response.ok) {
-      const result = (await response.json()) as Partial<JevResult>;
-
-      if (!result.answers) {
-        throw new Error('Invalid Jev evaluation response.');
-      }
-
-      return { model: result.model, answers: result.answers };
-    }
-
-    if (attempt === 2 || (response.status !== 429 && response.status !== 529)) {
-      throw new Error(`Jev evaluation failed (HTTP ${response.status}).`);
-    }
-
-    await Bun.sleep(300 * 2 ** attempt);
-
-    if (abortSignal?.aborted) {
-      throw new Error('Jev evaluation cancelled.');
-    }
-  }
-
-  throw new Error('Jev evaluation failed after retries.');
-}
-
 export async function classifyEventWithJev({
   db,
   event,
   threadContextEvents,
   referencedEvents,
   abortSignal,
+  capabilities,
 }: {
   db: Database;
   event: NostrEvent;
   threadContextEvents: NostrEvent[];
   referencedEvents: NostrEvent[];
   abortSignal: AbortSignal | null;
+  capabilities: CapabilityClient;
 }): Promise<EventClassification> {
   const settings = getNrSettings(db);
-  const apiKey = getNrJevApiKey(db) ?? '';
-
-  if (!apiKey) {
-    throw new Error(
-      'Jev API key is required in NR settings for classifier mode.',
-    );
-  }
 
   const manual = listActiveNrTaxonomyTerms({ db, type: 'topic' });
   const signals = listNrInterestSignals(db);
@@ -251,16 +199,32 @@ export async function classifyEventWithJev({
     preferences: buildNrPluginContextText(db),
   };
 
-  const base = settings.jevApiBase.replace(/\/+$/, '');
+  if (abortSignal?.aborted) {
+    throw new Error('System One evaluation cancelled.');
+  }
 
-  const result = await requestJev({
-    url: `${base}/v1/systemone`,
-    apiKey,
-    body: JSON.stringify({ model: 'jev-latest', state, questions }),
-    abortSignal,
+  const result = await capabilities.invoke({
+    operation: SystemOneV1.operations.evaluate,
+    provider: 'auto',
+    input: { model: null, state, questions },
   });
 
-  const answers = result.answers;
+  // The capability API has no cancellation channel; discard an obsolete result.
+  abortSignal?.throwIfAborted();
+
+  if (result.status === 'missing') {
+    throw new Error(
+      'No System One capability provider is available. Install System One and configure it with /systemone settings.',
+    );
+  }
+
+  if (result.status === 'selection-required') {
+    throw new Error(
+      'Multiple System One providers are available. Select a provider in the capabilities manager.',
+    );
+  }
+
+  const answers = result.output.answers as Record<string, JevAnswer>;
 
   const language = choice(answers, 'language', languageOptions);
   const relevance = answers.relevance;
@@ -322,7 +286,7 @@ export async function classifyEventWithJev({
     topics: topics.length ? topics : ['general'],
     moods: expressedMoods.length ? expressedMoods : ['neutral'],
     language: language.choice,
-    model: result.model ?? 'jev-latest',
+    model: result.output.model ?? 'jev-latest',
     confidence: Math.min(
       ...topicConfidences,
       ...moodConfidences,

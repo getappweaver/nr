@@ -154,8 +154,7 @@ function formatSettings(settings: ReturnType<typeof getNrSettings>): string {
   return [
     'Nostr radar settings:',
     `Evaluation mode: ${settings.mode}`,
-    `Jev API base: ${settings.jevApiBase}`,
-    `Jev API key: ${settings.jevHasApiKey ? 'configured' : 'not configured'}`,
+    'System One API provider: configure with /systemone settings; credentials are managed by System One.',
     `Jev topics: ${settings.jevTopics}`,
     `Jev choices per topic/mood question: ${settings.jevTopicBatchSize}`,
     `Jev moods: ${settings.jevMoods}`,
@@ -608,29 +607,11 @@ function renderSettingsWeb({
                   'Classifies up to 200 candidate topics from manual preferences, event tags, signals, and this list. Topic and mood choices are split across questions in one Jev request. No summary is generated.',
                 ),
               ]),
-              el('text', { weight: 'semibold', size: 'sm' }, [
+              el('text', { tone: 'muted', size: 'sm' }, [
                 text(
-                  `API key (${settings.jevHasApiKey ? 'configured' : 'not configured'})`,
+                  'Configure the shared System One provider with /systemone settings. NR sends event and preference context for each evaluation.',
                 ),
               ]),
-              el(
-                'textField',
-                {
-                  formFieldName: 'jev_api_key',
-                  inputPlaceholder:
-                    'Leave blank to keep current key; enter reset to clear',
-                  value: '',
-                },
-                [],
-              ),
-              el('text', { weight: 'semibold', size: 'sm' }, [
-                text('API base'),
-              ]),
-              el(
-                'textField',
-                { formFieldName: 'jev_api_base', value: settings.jevApiBase },
-                [],
-              ),
               ...(
                 [
                   ['jev_topics', 'Candidate topics', settings.jevTopics],
@@ -940,31 +921,6 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
   }
 
   const mode = rawMode as NrEvaluationMode | undefined;
-  const jevApiKey = asOptionalStringOverride(params.parsed.options.jev_api_key);
-
-  const jevApiBase = asOptionalStringOverride(
-    params.parsed.options.jev_api_base,
-  );
-
-  if (jevApiBase !== undefined) {
-    try {
-      const url = new URL(jevApiBase ?? '');
-
-      if (
-        url.protocol !== 'https:' &&
-        !(
-          url.protocol === 'http:' &&
-          ['localhost', '127.0.0.1'].includes(url.hostname)
-        )
-      ) {
-        throw new Error('invalid protocol');
-      }
-    } catch {
-      throw new Error(
-        'Jev API base must be an HTTPS URL (HTTP allowed for localhost).',
-      );
-    }
-  }
 
   const jevFields = {
     jevTopics: asOptionalStringOverride(params.parsed.options.jev_topics),
@@ -1104,8 +1060,6 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
 
   const hasUpdates =
     mode !== undefined ||
-    (jevApiKey !== undefined && jevApiKey !== null) ||
-    jevApiBase !== undefined ||
     Object.values(jevFields).some((value) => value !== undefined) ||
     jevTopicBatchSize !== undefined ||
     backend !== undefined ||
@@ -1148,23 +1102,11 @@ export async function adaptSettingsCommand(params: NrCommandAdapterParams) {
 
   const current = getNrSettings(params.db);
 
-  if (
-    (mode ?? current.mode) === 'classifier' &&
-    !current.jevHasApiKey &&
-    !jevApiKey?.trim()
-  ) {
-    throw new Error('Set a Jev API key before enabling classifier mode.');
-  }
-
-  if ((mode ?? current.mode) === 'classifier' && jevApiKey === 'reset') {
-    throw new Error('A Jev API key is required for classifier mode.');
-  }
-
   const next = saveNrSettings({
     db: params.db,
     mode: mode ?? current.mode,
-    jevApiKey: jevApiKey === 'reset' ? null : (jevApiKey ?? undefined),
-    jevApiBase: jevApiBase ?? current.jevApiBase,
+    jevApiKey: undefined,
+    jevApiBase: current.jevApiBase,
     jevTopics: jevFields.jevTopics ?? current.jevTopics,
     jevTopicBatchSize: jevTopicBatchSize ?? current.jevTopicBatchSize,
     jevMoods: jevFields.jevMoods ?? current.jevMoods,
