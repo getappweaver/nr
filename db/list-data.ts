@@ -229,9 +229,20 @@ export function relatedEventIds(rawJson: string): string[] {
   }
 }
 
-export function eventHasCompleteContext(event: NrEvent): boolean {
+export const NR_TIMELINE_MAX_EVENTS = 200;
+export const NR_TIMELINE_MAX_TOPIC_GROUPS = 35;
+export const NR_TIMELINE_MAX_MOOD_GROUPS = 20;
+export const NR_TIMELINE_MAX_EVENTS_PER_GROUP = 25;
+const ALL_FEED_CATEGORIES_COUNT = normalizeNrFeedCategories([]).length;
+
+export function eventHasCompleteContext(
+  event: NrEvent,
+  preparsedRawEvent?: NostrEvent | null,
+): boolean {
   try {
-    const rawEvent = JSON.parse(event.raw_json) as NostrEvent;
+    const rawEvent =
+      preparsedRawEvent ?? (JSON.parse(event.raw_json) as NostrEvent);
+
     const threadIds = new Set(relatedEventIds(event.thread_context_json));
 
     const referencedIds = new Set(
@@ -255,6 +266,50 @@ export function eventHasCompleteContext(event: NrEvent): boolean {
   } catch {
     return false;
   }
+}
+
+export type EventMatchesCategoryAndContextProps = {
+  event: NrEvent;
+  hiddenEventIds: ReadonlySet<string>;
+  mode: NrListMode;
+  categories: readonly NrFeedCategory[];
+};
+
+export function eventMatchesCategoryAndContext({
+  event,
+  hiddenEventIds,
+  mode,
+  categories,
+}: EventMatchesCategoryAndContextProps): boolean {
+  if (hiddenEventIds.has(event.id)) {
+    return false;
+  }
+
+  const allCategoriesSelected = categories.length >= ALL_FEED_CATEGORIES_COUNT;
+  const needsContextCheck = event.kind === 1 || event.kind === 1111;
+
+  if (!needsContextCheck && (mode === 'archive' || allCategoriesSelected)) {
+    return true;
+  }
+
+  let rawEvent: NostrEvent;
+  try {
+    rawEvent = JSON.parse(event.raw_json) as NostrEvent;
+  } catch {
+    return false;
+  }
+
+  if (needsContextCheck && !eventHasCompleteContext(event, rawEvent)) {
+    return false;
+  }
+
+  if (mode === 'archive' || allCategoriesSelected) {
+    return true;
+  }
+
+  const category = categoryForNrEvent(rawEvent);
+
+  return category !== null && categories.includes(category);
 }
 
 export type ListTagsProps = {
@@ -363,33 +418,24 @@ export function listEventsForTag({
       LEFT JOIN nr_classifications c ON c.event_id = e.id
       WHERE t.type = ? AND t.tag = ? AND ${predicate} ${timePredicate.sql} ${unreadTargetPredicate}
       ORDER BY e.event_created_at DESC
+      LIMIT ?
     `,
     )
-    .all(type, tag, ...timePredicate.params) as EventRow[];
+    .all(
+      type,
+      tag,
+      ...timePredicate.params,
+      NR_TIMELINE_MAX_EVENTS,
+    ) as EventRow[];
 
-  return rows.map(rowToNrEvent).filter((event) => {
-    if (
-      hiddenEventIds.has(event.id) ||
-      ((event.kind === 1 || event.kind === 1111) &&
-        !eventHasCompleteContext(event))
-    ) {
-      return false;
-    }
-
-    if (mode === 'archive') {
-      return true;
-    }
-
-    try {
-      const category = categoryForNrEvent(
-        JSON.parse(event.raw_json) as NostrEvent,
-      );
-
-      return category !== null && categories.includes(category);
-    } catch {
-      return false;
-    }
-  });
+  return rows.map(rowToNrEvent).filter((event) =>
+    eventMatchesCategoryAndContext({
+      event,
+      hiddenEventIds,
+      mode,
+      categories,
+    }),
+  );
 }
 
 export type BuildGroupsProps = {
@@ -399,6 +445,7 @@ export type BuildGroupsProps = {
   mode: NrListMode;
   categories: NrFeedCategory[];
   timeRanges: NrListTimeRange[];
+  allowedEventIds: ReadonlySet<string> | null;
 };
 
 export function buildGroups({
@@ -408,27 +455,42 @@ export function buildGroups({
   mode,
   categories,
   timeRanges,
+  allowedEventIds,
 }: BuildGroupsProps): NrTagGroup[] {
-  return listTags({ db, type, mode, timeRanges })
-    .map((row) => {
-      const events = listEventsForTag({
-        db,
-        type,
-        tag: row.tag,
-        hiddenEventIds,
-        mode,
-        categories,
-        timeRanges,
-      });
+  const maxGroups =
+    type === 'topic'
+      ? NR_TIMELINE_MAX_TOPIC_GROUPS
+      : NR_TIMELINE_MAX_MOOD_GROUPS;
 
-      return {
+  const tagRows = listTags({ db, type, mode, timeRanges });
+  const groups: NrTagGroup[] = [];
+
+  for (const row of tagRows) {
+    if (groups.length >= maxGroups) {
+      break;
+    }
+
+    const events = listEventsForTag({
+      db,
+      type,
+      tag: row.tag,
+      hiddenEventIds,
+      mode,
+      categories,
+      timeRanges,
+    }).filter((event) => !allowedEventIds || allowedEventIds.has(event.id));
+
+    if (events.length > 0) {
+      groups.push({
         type,
         tag: row.tag,
         unreadCount: events.length,
         events,
-      };
-    })
-    .filter((group) => group.events.length > 0);
+      });
+    }
+  }
+
+  return groups;
 }
 
 export type ListForYouCandidatesProps = {
@@ -548,6 +610,8 @@ export type ResolveListTimeSelectionProps = {
   requested: NrListTimeSelection;
   filterToLatestFetchedSlotOnOpen: boolean;
   fetchWindows: NrFetchWindow[];
+  unreadFetchSlots: readonly NrUnreadFetchSlot[];
+  latestHistoricalWindow: NrFetchWindow | null;
   nowSeconds: number;
 };
 
@@ -556,6 +620,8 @@ export function resolveListTimeSelection({
   requested,
   filterToLatestFetchedSlotOnOpen,
   fetchWindows,
+  unreadFetchSlots,
+  latestHistoricalWindow,
   nowSeconds,
 }: ResolveListTimeSelectionProps): ResolvedTimeSelection {
   if (requested.initialized) {
@@ -570,8 +636,17 @@ export function resolveListTimeSelection({
     calculateNrFetchCoverage({ fetchWindows, nowSeconds, hours: 24 }),
   );
 
-  return newestFetchedBucket
-    ? {
+  // Tier 1: If we fetched in the last 24h AND either that bucket has unread events
+  // or there are no unread slots anywhere in history, use the 24h newest bucket.
+  if (newestFetchedBucket) {
+    const hasUnreadIn24hBucket = unreadFetchSlots.some(
+      (slot) =>
+        slot.since === newestFetchedBucket.since &&
+        slot.until === newestFetchedBucket.until,
+    );
+
+    if (hasUnreadIn24hBucket || unreadFetchSlots.length === 0) {
+      return {
         ranges: [
           {
             since: newestFetchedBucket.since,
@@ -579,8 +654,68 @@ export function resolveListTimeSelection({
           },
         ],
         source: 'latest-fetched-slot',
-      }
-    : { ranges: [], source: 'none' };
+      };
+    }
+  }
+
+  // Tier 2: Land directly on the newest slot that actually has unread events
+  const newestUnreadSlot = unreadFetchSlots[0];
+
+  if (newestUnreadSlot) {
+    return {
+      ranges: [
+        {
+          since: newestUnreadSlot.since,
+          until: newestUnreadSlot.until,
+        },
+      ],
+      source: 'latest-fetched-slot',
+    };
+  }
+
+  // Tier 3: If all historical slots are read, land on the most recent historical fetch window
+  if (newestFetchedBucket) {
+    return {
+      ranges: [
+        {
+          since: newestFetchedBucket.since,
+          until: newestFetchedBucket.until,
+        },
+      ],
+      source: 'latest-fetched-slot',
+    };
+  }
+
+  if (latestHistoricalWindow && latestHistoricalWindow.until > 0) {
+    const anchorSecond = Math.max(0, latestHistoricalWindow.until - 1);
+
+    const slotSince =
+      Math.floor(anchorSecond / NR_FETCH_SLOT_SECONDS) * NR_FETCH_SLOT_SECONDS;
+
+    return {
+      ranges: [
+        {
+          since: slotSince,
+          until: slotSince + NR_FETCH_SLOT_SECONDS,
+        },
+      ],
+      source: 'latest-fetched-slot',
+    };
+  }
+
+  // Tier 4: Empty DB guard — never return ranges: [] when filterToLatestFetchedSlotOnOpen is true
+  const currentSlotSince =
+    Math.floor(nowSeconds / NR_FETCH_SLOT_SECONDS) * NR_FETCH_SLOT_SECONDS;
+
+  return {
+    ranges: [
+      {
+        since: currentSlotSince,
+        until: currentSlotSince + NR_FETCH_SLOT_SECONDS,
+      },
+    ],
+    source: 'latest-fetched-slot',
+  };
 }
 
 export const NR_FETCH_SLOT_SECONDS = 60 * 60;
@@ -618,6 +753,7 @@ export function listUnreadFetchSlots({
 
   const latestUntil = Math.max(...fetchWindows.map((window) => window.until));
   const latestCoveredSecond = Math.max(0, latestUntil - 1);
+  const allCategoriesSelected = categories.length >= ALL_FEED_CATEGORIES_COUNT;
 
   const candidateRows = db
     .prepare(
@@ -666,11 +802,16 @@ export function listUnreadFetchSlots({
   for (const candidate of candidates) {
     const hiddenIds = hiddenIdsByHour.get(candidate.since) ?? new Set<string>();
 
-    for (const id of [
-      ...relatedEventIds(candidate.event.thread_context_json),
-      ...relatedEventIds(candidate.event.referenced_events_json),
-    ]) {
-      hiddenIds.add(id);
+    if (
+      candidate.event.thread_context_json.length > 2 ||
+      candidate.event.referenced_events_json.length > 2
+    ) {
+      for (const id of [
+        ...relatedEventIds(candidate.event.thread_context_json),
+        ...relatedEventIds(candidate.event.referenced_events_json),
+      ]) {
+        hiddenIds.add(id);
+      }
     }
 
     hiddenIdsByHour.set(candidate.since, hiddenIds);
@@ -679,28 +820,32 @@ export function listUnreadFetchSlots({
   const unreadByHour = new Map<number, number>();
 
   for (const candidate of candidates) {
-    let category: NrFeedCategory | null;
-
-    try {
-      category = categoryForNrEvent(
-        JSON.parse(candidate.event.raw_json) as NostrEvent,
-      );
-    } catch {
-      category = null;
+    if (candidate.row.target_read !== 0) {
+      continue;
     }
 
-    if (!category || !categories.includes(category)) {
-      continue;
+    let rawEvent: NostrEvent | null = null;
+
+    if (!allCategoriesSelected) {
+      try {
+        rawEvent = JSON.parse(candidate.event.raw_json) as NostrEvent;
+        const category = categoryForNrEvent(rawEvent);
+
+        if (!category || !categories.includes(category)) {
+          continue;
+        }
+      } catch {
+        continue;
+      }
     }
 
     const visible =
       candidate.event.kind === 1
         ? (candidate.row.has_tag === 1 ||
             signalAuthorPubkeys.has(candidate.event.pubkey.toLowerCase())) &&
-          candidate.row.target_read === 0 &&
           !hiddenIdsByHour.get(candidate.since)?.has(candidate.event.id) &&
-          eventHasCompleteContext(candidate.event)
-        : candidate.row.target_read === 0;
+          eventHasCompleteContext(candidate.event, rawEvent)
+        : true;
 
     if (visible) {
       unreadByHour.set(
@@ -740,24 +885,6 @@ export function getNrListData({
   const nowSeconds = Math.floor(Date.now() / 1000);
   const settings = getNrSettings(db);
 
-  const fetchWindows = listNrFetchWindows({
-    db,
-    since: nowSeconds - 24 * 60 * 60,
-    until: nowSeconds,
-    scopes: ['follows'],
-  });
-
-  const resolvedTimeSelection = resolveListTimeSelection({
-    mode,
-    requested: timeSelection,
-    filterToLatestFetchedSlotOnOpen: settings.filterToLatestFetchedSlotOnOpen,
-    fetchWindows,
-    nowSeconds,
-  });
-
-  const queryTimeRanges =
-    mode === 'timeline' ? resolvedTimeSelection.ranges : [];
-
   const selectedCategories =
     mode === 'archive' || mode === 'signals'
       ? normalizeNrFeedCategories([])
@@ -766,11 +893,94 @@ export function getNrListData({
           mode,
         });
 
+  const interestSignals = listNrInterestSignals(db);
+  const authorPreferences = listNrAuthorPreferences(db);
+  const topicAffinities = buildNrTopicAffinities(interestSignals);
+
+  const learnedAuthorAffinities =
+    buildNrLearnedAuthorAffinities(interestSignals);
+
+  const fetchWindows = listNrFetchWindows({
+    db,
+    since: nowSeconds - 24 * 60 * 60,
+    until: nowSeconds,
+    scopes: ['follows'],
+  });
+
+  const unreadFetchSlots =
+    mode === 'timeline'
+      ? listUnreadFetchSlots({
+          db,
+          categories: selectedCategories,
+          signalAuthorPubkeys: new Set(learnedAuthorAffinities.keys()),
+        })
+      : [];
+
+  const latestHistoricalWindowRow =
+    mode === 'timeline' && fetchWindows.length === 0
+      ? (db
+          .prepare(
+            `SELECT *
+             FROM nr_fetch_windows
+             WHERE scope = 'follows' AND status IN ('fetched', 'partial')
+             ORDER BY until DESC
+             LIMIT 1`,
+          )
+          .get() as FetchWindowRow | null)
+      : null;
+
+  const latestHistoricalWindow = latestHistoricalWindowRow
+    ? rowToNrFetchWindow(latestHistoricalWindowRow)
+    : null;
+
+  const resolvedTimeSelection = resolveListTimeSelection({
+    mode,
+    requested: timeSelection,
+    filterToLatestFetchedSlotOnOpen: settings.filterToLatestFetchedSlotOnOpen,
+    fetchWindows,
+    unreadFetchSlots,
+    latestHistoricalWindow,
+    nowSeconds,
+  });
+
+  const queryTimeRanges =
+    mode === 'timeline' ? resolvedTimeSelection.ranges : [];
+
   const hiddenEventIds = relatedEventIdsForMode({
     db,
     mode,
     timeRanges: queryTimeRanges,
   });
+
+  // Safety bound: If queryTimeRanges is empty or spans multiple hours, cap total distinct
+  // timeline/archive candidate events to NR_TIMELINE_MAX_EVENTS so unconstrained queries never hang.
+  let timelineTruncated = false;
+  let allowedTimelineEventIds: Set<string> | null = null;
+
+  if (mode === 'timeline' || mode === 'archive') {
+    const boundPredicate = listModePredicate(mode);
+    const boundTime = eventTimeRangePredicate(queryTimeRanges);
+
+    const boundRows = db
+      .prepare(
+        `SELECT id
+         FROM nr_events e
+         WHERE ${boundPredicate} ${boundTime.sql}
+         ORDER BY e.event_created_at DESC
+         LIMIT ?`,
+      )
+      .all(...boundTime.params, NR_TIMELINE_MAX_EVENTS + 1) as Array<{
+      id: string;
+    }>;
+
+    if (boundRows.length > NR_TIMELINE_MAX_EVENTS) {
+      timelineTruncated = true;
+
+      allowedTimelineEventIds = new Set(
+        boundRows.slice(0, NR_TIMELINE_MAX_EVENTS).map((row) => row.id),
+      );
+    }
+  }
 
   const topicGroups =
     mode === 'for-you' || mode === 'signals'
@@ -782,10 +992,8 @@ export function getNrListData({
           mode,
           categories: selectedCategories,
           timeRanges: queryTimeRanges,
+          allowedEventIds: allowedTimelineEventIds,
         });
-
-  // Group/item ordering by score is applied after forYouScores are
-  // computed (see below), so no ordering here.
 
   const moodGroups =
     mode === 'for-you' || mode === 'signals'
@@ -797,6 +1005,7 @@ export function getNrListData({
           mode,
           categories: selectedCategories,
           timeRanges: queryTimeRanges,
+          allowedEventIds: allowedTimelineEventIds,
         });
 
   const defaultLanguage = (settings.defaultLanguage ?? 'en').toLowerCase();
@@ -820,9 +1029,9 @@ export function getNrListData({
     )
     .sort((left, right) => left.localeCompare(right))
     .map((language) => {
-      const events = languageEvents.filter(
-        (event) => event.language === language,
-      );
+      const events = languageEvents
+        .filter((event) => event.language === language)
+        .slice(0, NR_TIMELINE_MAX_EVENTS_PER_GROUP);
 
       return {
         type: 'language' as const,
@@ -864,22 +1073,26 @@ export function getNrListData({
          FROM nr_events e
          LEFT JOIN nr_classifications c ON c.event_id = e.id
            WHERE e.kind IN (6, 7, 16, 9735) AND ${listModePredicate(mode)} ${activityTimePredicate.sql} ${activityTargetPredicate}
-         ORDER BY e.event_created_at DESC`,
+         ORDER BY e.event_created_at DESC
+         LIMIT ?`,
             )
-            .all(...activityTimePredicate.params) as EventRow[]
+            .all(
+              ...activityTimePredicate.params,
+              NR_TIMELINE_MAX_EVENTS,
+            ) as EventRow[]
         )
           .map(rowToNrEvent)
-          .filter((event) => {
-            try {
-              const category = categoryForNrEvent(
-                JSON.parse(event.raw_json) as NostrEvent,
-              );
-
-              return category !== null && selectedCategories.includes(category);
-            } catch {
-              return false;
-            }
-          });
+          .filter(
+            (event) =>
+              (!allowedTimelineEventIds ||
+                allowedTimelineEventIds.has(event.id)) &&
+              eventMatchesCategoryAndContext({
+                event,
+                hiddenEventIds,
+                mode,
+                categories: selectedCategories,
+              }),
+          );
 
   const visibleUnreadEventIds = new Set(
     [
@@ -890,15 +1103,6 @@ export function getNrListData({
     ].map((event) => event.id),
   );
 
-  const interestSignals = listNrInterestSignals(db);
-  const authorPreferences = listNrAuthorPreferences(db);
-  const topicAffinities = buildNrTopicAffinities(interestSignals);
-
-  const learnedAuthorAffinities =
-    buildNrLearnedAuthorAffinities(interestSignals);
-
-  // Signals are the learned author history; selected slots constrain posts,
-  // not when the author was liked, replied to, or otherwise reviewed.
   const eventsByAuthor = new Map<string, NrEvent[]>();
 
   if (mode === 'timeline' && learnedAuthorAffinities.size > 0) {
@@ -908,6 +1112,10 @@ export function getNrListData({
       categories: selectedCategories,
       timeRanges: queryTimeRanges,
     })) {
+      if (allowedTimelineEventIds && !allowedTimelineEventIds.has(event.id)) {
+        continue;
+      }
+
       const pubkey = event.pubkey.toLowerCase();
 
       if (!learnedAuthorAffinities.has(pubkey)) {
@@ -959,6 +1167,84 @@ export function getNrListData({
   const selectedForYouEvents = rankedForYouEvents.slice(0, 25);
   const forYouEvents = selectedForYouEvents.map(({ event }) => event);
 
+  const visibleScoredEvents =
+    mode === 'for-you'
+      ? selectedForYouEvents
+      : [
+          ...new Map(
+            [...topicGroups, ...moodGroups, ...authorGroups]
+              .flatMap((group) => group.events)
+              .filter((event) => event.kind === 1 || event.kind === 30023)
+              .map((event) => [event.id, event]),
+          ).values(),
+        ].map((event) => ({
+          event,
+          score: scoreNrEventForYou({
+            event,
+            topicAffinities,
+            learnedAuthorAffinities,
+            explicitAuthorBiases,
+            zapSats: zappedSats.get(event.id) ?? 0,
+          }),
+        }));
+
+  const forYouScores = Object.fromEntries(
+    visibleScoredEvents.map(({ event, score }) => [event.id, score]),
+  );
+
+  const scoreOf = (id: string): number =>
+    forYouScores[id] ?? Number.NEGATIVE_INFINITY;
+
+  const sortEventsByScore = (events: NrEvent[]) => {
+    events.sort(
+      (left, right) =>
+        scoreOf(right.id) - scoreOf(left.id) ||
+        right.event_created_at - left.event_created_at,
+    );
+  };
+
+  const maxGroupScore = (group: Pick<NrTagGroup, 'events'>): number =>
+    group.events.reduce(
+      (max, event) => Math.max(max, scoreOf(event.id)),
+      Number.NEGATIVE_INFINITY,
+    );
+
+  const sortAndCapGroupsByScore = (groups: NrTagGroup[]) => {
+    for (const group of groups) {
+      sortEventsByScore(group.events);
+      group.unreadCount = group.events.length;
+
+      if (group.events.length > NR_TIMELINE_MAX_EVENTS_PER_GROUP) {
+        group.events = group.events.slice(0, NR_TIMELINE_MAX_EVENTS_PER_GROUP);
+      }
+    }
+
+    groups.sort(
+      (left, right) =>
+        maxGroupScore(right) - maxGroupScore(left) ||
+        right.unreadCount - left.unreadCount ||
+        left.tag.localeCompare(right.tag),
+    );
+  };
+
+  sortAndCapGroupsByScore(topicGroups);
+  sortAndCapGroupsByScore(moodGroups);
+
+  for (const group of authorGroups) {
+    sortEventsByScore(group.events);
+
+    if (group.events.length > NR_TIMELINE_MAX_EVENTS_PER_GROUP) {
+      group.events = group.events.slice(0, NR_TIMELINE_MAX_EVENTS_PER_GROUP);
+    }
+  }
+
+  authorGroups.sort(
+    (left, right) =>
+      maxGroupScore(right) - maxGroupScore(left) ||
+      right.events.length - left.events.length ||
+      left.pubkey.localeCompare(right.pubkey),
+  );
+
   const visibleEvents = [
     ...authorGroups.flatMap((group) => group.events),
     ...topicGroups.flatMap((group) => group.events),
@@ -983,88 +1269,17 @@ export function getNrListData({
     return event ? [event] : [];
   });
 
-  const visibleScoredEvents =
-    mode === 'for-you'
-      ? selectedForYouEvents
-      : [
-          ...new Map(
-            [...topicGroups, ...moodGroups, ...authorGroups]
-              .flatMap((group) => group.events)
-              .filter((event) => event.kind === 1 || event.kind === 30023)
-              .map((event) => [event.id, event]),
-          ).values(),
-        ].map((event) => ({
-          event,
-          score: scoreNrEventForYou({
-            event,
-            topicAffinities,
-            learnedAuthorAffinities,
-            explicitAuthorBiases,
-            zapSats: zappedSats.get(event.id) ?? 0,
-          }),
-        }));
-
-  const forYouScores = Object.fromEntries(
-    [
-      ...visibleScoredEvents,
-      ...(mode === 'for-you'
-        ? conversationContextEvents.map((event) => ({
-            event,
-            score: scoreNrEventForYou({
-              event,
-              topicAffinities,
-              learnedAuthorAffinities,
-              explicitAuthorBiases,
-              zapSats: zappedSats.get(event.id) ?? 0,
-            }),
-          }))
-        : []),
-    ].map(({ event, score }) => [event.id, score]),
-  );
-
-  const scoreOf = (id: string): number =>
-    forYouScores[id] ?? Number.NEGATIVE_INFINITY;
-
-  const sortEventsByScore = (events: NrEvent[]) => {
-    events.sort(
-      (left, right) =>
-        scoreOf(right.id) - scoreOf(left.id) ||
-        right.event_created_at - left.event_created_at,
-    );
-  };
-
-  const maxGroupScore = (group: Pick<NrTagGroup, 'events'>): number =>
-    group.events.reduce(
-      (max, event) => Math.max(max, scoreOf(event.id)),
-      Number.NEGATIVE_INFINITY,
-    );
-
-  const sortGroupsByScore = (groups: NrTagGroup[]) => {
-    for (const group of groups) {
-      sortEventsByScore(group.events);
+  if (mode === 'for-you') {
+    for (const contextEvent of conversationContextEvents) {
+      forYouScores[contextEvent.id] = scoreNrEventForYou({
+        event: contextEvent,
+        topicAffinities,
+        learnedAuthorAffinities,
+        explicitAuthorBiases,
+        zapSats: zappedSats.get(contextEvent.id) ?? 0,
+      });
     }
-
-    groups.sort(
-      (left, right) =>
-        maxGroupScore(right) - maxGroupScore(left) ||
-        right.unreadCount - left.unreadCount ||
-        left.tag.localeCompare(right.tag),
-    );
-  };
-
-  sortGroupsByScore(topicGroups);
-  sortGroupsByScore(moodGroups);
-
-  for (const group of authorGroups) {
-    sortEventsByScore(group.events);
   }
-
-  authorGroups.sort(
-    (left, right) =>
-      maxGroupScore(right) - maxGroupScore(left) ||
-      right.events.length - left.events.length ||
-      left.pubkey.localeCompare(right.pubkey),
-  );
 
   const signalAggregates =
     mode === 'signals'
@@ -1108,13 +1323,11 @@ export function getNrListData({
         : mode === 'signals'
           ? interestSignals.length
           : visibleUnreadEventIds.size,
+    timelineTruncated,
+    timelineEventLimit: NR_TIMELINE_MAX_EVENTS,
     fetchCoverageNowSeconds: nowSeconds,
     fetchWindows,
-    unreadFetchSlots: listUnreadFetchSlots({
-      db,
-      categories: selectedCategories,
-      signalAuthorPubkeys: new Set(learnedAuthorAffinities.keys()),
-    }),
+    unreadFetchSlots,
     interactions: listNrInteractions(db),
     interestSignals,
     signalTopicAggregates: signalAggregates.topicAggregates,

@@ -210,13 +210,17 @@ async function runListCommand(
   });
 
   const storedEvents = [
-    ...listData.topicGroups.flatMap((group) => group.events),
-    ...listData.moodGroups.flatMap((group) => group.events),
-    ...listData.languageGroups.flatMap((group) => group.events),
-    ...listData.authorGroups.flatMap((group) => group.events),
-    ...listData.forYouEvents,
-    ...listData.activityEvents,
-    ...listData.conversationContextEvents,
+    ...new Map(
+      [
+        ...listData.topicGroups.flatMap((group) => group.events),
+        ...listData.moodGroups.flatMap((group) => group.events),
+        ...listData.languageGroups.flatMap((group) => group.events),
+        ...listData.authorGroups.flatMap((group) => group.events),
+        ...listData.forYouEvents,
+        ...listData.activityEvents,
+        ...listData.conversationContextEvents,
+      ].map((event) => [event.id, event]),
+    ).values(),
   ];
 
   if (!localMutation) {

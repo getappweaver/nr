@@ -4,9 +4,13 @@ All notable changes for each version are listed under the corresponding `v*.*.*`
 Tags and this file are updated by the post-commit hook when you commit with `--patch`, `--minor`, or `--major` (see CONTRIBUTING.md).
 You can also run `bun run release:changelog` to rewrite this file from tags.
 
+## [v4.5.1] - 2026-11-14
+
+- fix: make the first opening faster (5152741)
+
 ## [v4.5.0] - 2026-10-07
 
-- chore: required changes for core v14 (b207208)
+- chore: required changes for core v14 (67aa894)
 
 ## [v4.4.0] - 2026-10-06
 

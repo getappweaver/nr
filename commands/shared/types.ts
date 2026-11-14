@@ -207,6 +207,8 @@ export type NrListData = {
   languageGroups: NrTagGroup[];
   authorGroups: NrAuthorGroup[];
   unreadTotal: number;
+  timelineTruncated?: boolean;
+  timelineEventLimit?: number;
   fetchCoverageNowSeconds: number;
   fetchWindows: NrFetchWindow[];
   unreadFetchSlots: NrUnreadFetchSlot[];

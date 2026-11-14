@@ -1,7 +1,5 @@
 import type { Database as DatabaseType } from 'bun:sqlite';
 
-import type { NostrEvent } from '../commands/shared/types';
-
 import {
   rowToNrEvaluationQueueItem,
   safeParseStringArray,

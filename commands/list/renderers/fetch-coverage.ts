@@ -40,6 +40,11 @@ export type FetchCoverageBarResult = {
 export const fetchCoverageStylesheet = {
   id: 'nr-fetch-coverage',
   cssText: `
+.nr-slot-stepper {
+  min-width: 0;
+  margin-bottom: 0.25rem;
+}
+
 .nr-fetch-coverage-bar {
   display: grid;
   gap: 1px;
@@ -578,6 +583,151 @@ function unreadFetchBucket(slot: NrUnreadFetchSlot): FetchBucket {
   };
 }
 
+const MAX_VISIBLE_UNREAD_SLOT_CHUNKS = 4;
+
+function formatShortSlotLabel(sinceSeconds: number): string {
+  const date = new Date(sinceSeconds * 1000);
+
+  return date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function slotPaginationNode(
+  alias: string,
+  listData: NrListData,
+): WebNode | null {
+  const unreadSlots = listData.unreadFetchSlots;
+
+  if (unreadSlots.length === 0 && listData.selectedTimeRanges.length === 0) {
+    return null;
+  }
+
+  // unreadSlots is sorted descending by `since` (index 0 = newest unread slot)
+  const primaryRange = listData.selectedTimeRanges[0] ?? null;
+
+  const exactIndex = primaryRange
+    ? unreadSlots.findIndex(
+        (slot) =>
+          slot.since === primaryRange.since &&
+          slot.until === primaryRange.until,
+      )
+    : -1;
+
+  // Older unread slot has a smaller `since` timestamp (higher index in descending array)
+  const olderSlot =
+    exactIndex >= 0
+      ? (unreadSlots[exactIndex + 1] ?? null)
+      : primaryRange
+        ? (unreadSlots.find((slot) => slot.since < primaryRange.since) ?? null)
+        : (unreadSlots[0] ?? null);
+
+  // Newer unread slot has a larger `since` timestamp (lower index in descending array)
+  const newerSlot =
+    exactIndex > 0
+      ? (unreadSlots[exactIndex - 1] ?? null)
+      : primaryRange
+        ? ([...unreadSlots]
+            .reverse()
+            .find((slot) => slot.since > primaryRange.since) ?? null)
+        : null;
+
+  const activeLabel = primaryRange
+    ? `${formatShortSlotLabel(primaryRange.since)} → ${new Date(
+        primaryRange.until * 1000,
+      ).toLocaleTimeString(undefined, {
+        hour: '2-digit',
+        minute: '2-digit',
+      })}${
+        exactIndex >= 0
+          ? ` (${unreadSlots[exactIndex]!.unreadCount} unread · slot ${exactIndex + 1}/${unreadSlots.length})`
+          : listData.selectedTimeRanges.length > 1
+            ? ` (+${listData.selectedTimeRanges.length - 1} more)`
+            : ''
+      }`
+    : `All time (capped at ${listData.timelineEventLimit ?? 200} latest events)`;
+
+  return el(
+    'row',
+    {
+      className: 'nr-slot-stepper',
+      gap: 'xs',
+      itemAlign: 'center',
+      align: 'between',
+    },
+    [
+      el('row', { gap: 'xs', itemAlign: 'center' }, [
+        el(
+          'button',
+          {
+            label: olderSlot ? `← Older (${olderSlot.unreadCount})` : '← Older',
+            className: 'web-button--link',
+            disabled: !olderSlot,
+            ...(olderSlot
+              ? {
+                  action: listTimeFilterAction({
+                    alias,
+                    mode: listData.mode,
+                    selectedTimeRanges: [
+                      { since: olderSlot.since, until: olderSlot.until },
+                    ],
+                  }),
+                }
+              : {}),
+          },
+          [],
+        ),
+        el('text', { size: 'sm', weight: 'semibold' }, [text(activeLabel)]),
+        el(
+          'button',
+          {
+            label: newerSlot ? `Newer (${newerSlot.unreadCount}) →` : 'Newer →',
+            className: 'web-button--link',
+            disabled: !newerSlot,
+            ...(newerSlot
+              ? {
+                  action: listTimeFilterAction({
+                    alias,
+                    mode: listData.mode,
+                    selectedTimeRanges: [
+                      { since: newerSlot.since, until: newerSlot.until },
+                    ],
+                  }),
+                }
+              : {}),
+          },
+          [],
+        ),
+      ]),
+      ...(exactIndex !== 0 && unreadSlots[0]
+        ? [
+            el(
+              'button',
+              {
+                label: 'Newest unread',
+                className: 'web-button--link',
+                action: listTimeFilterAction({
+                  alias,
+                  mode: listData.mode,
+                  selectedTimeRanges: [
+                    {
+                      since: unreadSlots[0].since,
+                      until: unreadSlots[0].until,
+                    },
+                  ],
+                }),
+              },
+              [],
+            ),
+          ]
+        : []),
+    ],
+  );
+}
+
 function chunkUnreadSlots(slots: NrUnreadFetchSlot[]): NrUnreadFetchSlot[][] {
   const chunks: NrUnreadFetchSlot[][] = [];
 
@@ -602,7 +752,12 @@ function unreadChunkLabel(slots: NrUnreadFetchSlot[]): string {
 }
 
 function unreadSlotsNode(alias: string, listData: NrListData): WebNode {
-  const chunks = chunkUnreadSlots(listData.unreadFetchSlots);
+  const allChunks = chunkUnreadSlots(listData.unreadFetchSlots);
+  const visibleChunks = allChunks.slice(0, MAX_VISIBLE_UNREAD_SLOT_CHUNKS);
+
+  const hiddenSlotCount =
+    listData.unreadFetchSlots.length -
+    visibleChunks.reduce((sum, chunk) => sum + chunk.length, 0);
 
   return el(
     'stack',
@@ -610,26 +765,37 @@ function unreadSlotsNode(alias: string, listData: NrListData): WebNode {
       className: 'nr-unread-slot-list',
       visibleWhenToggleKey: NR_UNREAD_SLOTS_TOGGLE_KEY,
     },
-    chunks.length > 0
-      ? chunks.map((slots) =>
-          el('stack', { className: 'nr-unread-slot-chunk' }, [
-            el('text', { className: 'nr-unread-slot-range' }, [
-              text(unreadChunkLabel(slots)),
-            ]),
-            el(
-              'row',
-              { className: 'nr-unread-slot-button-row' },
-              slots.map((slot) =>
-                fetchBucketNode({
-                  alias,
-                  bucket: unreadFetchBucket(slot),
-                  mode: listData.mode,
-                  selectedTimeRanges: listData.selectedTimeRanges,
-                }),
+    visibleChunks.length > 0
+      ? [
+          ...visibleChunks.map((slots) =>
+            el('stack', { className: 'nr-unread-slot-chunk' }, [
+              el('text', { className: 'nr-unread-slot-range' }, [
+                text(unreadChunkLabel(slots)),
+              ]),
+              el(
+                'row',
+                { className: 'nr-unread-slot-button-row' },
+                slots.map((slot) =>
+                  fetchBucketNode({
+                    alias,
+                    bucket: unreadFetchBucket(slot),
+                    mode: listData.mode,
+                    selectedTimeRanges: listData.selectedTimeRanges,
+                  }),
+                ),
               ),
-            ),
-          ]),
-        )
+            ]),
+          ),
+          ...(hiddenSlotCount > 0
+            ? [
+                el('text', { tone: 'muted', size: 'sm' }, [
+                  text(
+                    `+${hiddenSlotCount} older unread slots omitted (use ← Older to step through history).`,
+                  ),
+                ]),
+              ]
+            : []),
+        ]
       : [
           el('text', { tone: 'muted', size: 'sm' }, [
             text('No fetched slots contain unread events.'),
@@ -698,10 +864,22 @@ export function fetchCoverageBar(
     ...listData.unreadFetchSlots.map((slot) => nrListTimeRangeKey(slot)),
   ];
 
+  const paginationStepper = slotPaginationNode(alias, listData);
+
   const node = el('stack', { id: 'nr-fetch-coverage', gap: 'xs' }, [
     el('row', { gap: 'xs', itemAlign: 'baseline', align: 'between' }, [
       el('text', { weight: 'semibold', size: 'sm' }, [text('Timeline bar')]),
     ]),
+    ...(paginationStepper ? [paginationStepper] : []),
+    ...(listData.timelineTruncated
+      ? [
+          el('text', { tone: 'muted', size: 'sm' }, [
+            text(
+              `Showing latest ${listData.timelineEventLimit ?? 200} events for this selection. Select a 1-hour slot to inspect full slot contents.`,
+            ),
+          ]),
+        ]
+      : []),
     unreadSlotsToggle(listData.unreadFetchSlots.length),
     el(
       'treeTimeFilterStatus',
